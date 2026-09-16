@@ -1,29 +1,56 @@
-# 📌 n8n × Dify × Feishu ChatOps
+# 📌 n8n × Dify × 飞书：零代码把 AI 客服接进飞书群
 
-> **一个飞书群里的"真"AI 客服**：上传 PDF → 自动入库知识库 → 群里问一句 → Bot 几秒内出答案。
-> 两个文件，**n8n 编排 + Dify 推理**，跑通整套"工程化"闭环。
+> **上传 PDF → 自动进知识库 → 群里问一句 → Bot 秒回。**
+> 不写一行代码，就能把 AI 能力落地到真实工作场景。
 
 <p align="center">
   <a href="https://www.bilibili.com/video/BV1enec67ESC/?vd_source=44acea9bb2307b086991c801ec728660"><img src="https://img.shields.io/badge/▶-演示视频(60s)-ff69b4?style=for-the-badge"/></a>
   <img src="https://img.shields.io/badge/角色-独立设计 / 全栈交付-blueviolet?style=flat-square"/>
-  <img src="https://img.shields.io/badge/stack-n8n · Dify · Feishu · Supabase-4c8bf5?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-success?style=flat-square"/>
 </p>
 
 ---
 
-## 🎬 先看 60 秒演示（建议你先看这个）
+## 🎬 先看 60 秒演示
 
 👉 [https://www.bilibili.com/video/BV1enec67ESC](https://www.bilibili.com/video/BV1enec67ESC/?vd_source=44acea9bb2307b086991c801ec728660)
 
-视频里能看到 4 个真实场景：
+视频里 4 个真实场景：
 
-| 场景 | 演示了什么 |
+| 场景 | 发生了什么 |
 |------|----------|
-| 上传 PDF 到群 | 自动下载 → 向量化 → 入库，**用户无感** |
-| 发"查订单 ZD20240001" | 参数提取 → Supabase 查询 → 自然语言回复 |
-| 发"MA1600 报警 E001 怎么办" | 意图分类 → 知识库检索 → 带引用回答 |
+| 上传 PDF 到群 | 自动下载 → 向量化 → 入库，**用户无感知** |
+| 发"查订单 ZD20240001" | 自动提取订单号 → 查库 → 自然语言回复 |
+| 发"MA1600 报警 E001 怎么办" | 意图识别 → 知识库检索 → 带引用来源的回答 |
 | 上传商品图 + 询问是否有货 | 多模态解析 → 图文混合问答 |
+
+---
+
+## 💡 这套组合解决了什么问题
+
+做 AI 客服不难，但让企业真正用起来很难。
+
+**n8n + Dify + 飞书**这个组合，恰好覆盖了落地链条上的三个关键环节：
+
+### 编排 → n8n
+
+> "能不能让我不改代码，就能随时改流程？"
+
+n8n 是可视化的工作流编辑器。所有节点一目了然，改逻辑、调参数、加节点都可以在界面上操作，不用碰代码。飞书的 Token 缓存、幂等去重、重试逻辑全在这里配置，**随时可改，随时可回滚**。
+
+更重要的是，n8n 的 HTTP 节点生态非常完整——Dify、Supabase、外部 API 都可以直接调，零代码接入任意服务。
+
+### 推理大脑 → Dify
+
+> "AI 回答不稳定，怎么管？怎么迭代？"
+
+Dify 解决了 AI 应用最难的部分：**持续运营**。Prompt 版本化、知识库管理、意图分类配置都在 Dify 控制台里，改 Prompt 不用发版，热更新直接生效。RAG 的 top_k、召回策略也可以在界面里调，**运营人员也能优化 AI 回答质量**，不需要工程师介入。
+
+### 入口 → 飞书
+
+> "我不想让员工装新 App，能在飞书里直接用吗？"
+
+飞书是国内企业用户最多的 IM，天然就是入口。员工不需要任何额外操作，群里 @Bot 发消息就行。Bot 用卡片回复，格式规范、可追溯，**员工体验和微信一样自然**。
 
 ---
 
@@ -32,113 +59,50 @@
 ```
 飞书群用户 ──发消息──► 飞书 Open API
                          │
-                         ▼ Webhook (HTTPS POST)
+                         ▼ Webhook
                   ┌──────────────────┐
-                  │   n8n 工作流     │ 飞书AI知识库+查订单.json
-                  │  ─ 幂等去重(SETNX)│ ← event_id 做幂等键，覆盖飞书 3s 重试窗口
-                  │  ─ Token 缓存     │ ← tenant_access_token 2h 缓存，减少 auth 调用
-                  │  ─ 意图路由      │ ← 订单 / 技术 / 商务 / 知识库 4路并行
-                  │  ─ 重试+超时     │ ← 每个 HTTP 节点配指数回退
-                  │  ─ 可观测日志    │ ← JSON 结构化日志（request_id/user_id/latency_ms）
-                  │  ─ 富交互卡片    │ ← Markdown 卡片 + request_id 追溯
+                  │   n8n 工作流    │ ← 编排中枢：幂等 / 重试 / 路由 / 日志
                   └────────┬─────────┘
-                           │
         ┌──────────────────┼──────────────────┐
         ▼                  ▼                  ▼
-   Supabase            Dify RAG           hohoAPI
-   查订单/数据       知识库检索 + LLM     视觉解析（多模态）
-   (Dify app 调用)   (Dify app 调用)    (n8n HTTP 调用)
+   Supabase            Dify RAG           多模态 API
+   查订单              知识库检索          图文问答
         │                  │                  │
         └──────────────────┼──────────────────┘
                            ▼
                   ┌──────────────────┐
-                  │   飞书消息卡片    │ ← 富文本 + request_id 追溯
+                  │   飞书消息卡片    │ ← 格式化回复 + request_id 追溯
                   └──────────────────┘
 ```
 
-**核心定位**：
-- **n8n** 是"编排中枢"：幂等、重试、可观测、Token 缓存
-- **Dify** 是"推理大脑"：意图分类、Prompt 版本化、知识库 Rerank
-- **飞书** 是"交互入口"：卡片交互优于纯文本，企业权限天然支持多群隔离
-
-**实际界面**：
-
-![n8n 工作流](n8n-dify-飞书群/n8n界面截图.png)
-
-![Dify 应用编排](n8n-dify-飞书群/dify界面截图.png)
+**一句话总结**：飞书收消息 → n8n 做调度 → Dify 做推理 → 飞书回结果。全程零代码。
 
 ---
 
-## ✨ 工程化细节
+## 🎯 能做什么
 
-### 🔐 密钥隔离
-所有密钥通过 `.env` 注入，配置文件只保留 `{{ $env.XXX }}` 占位符。`.env` 已加入 `.gitignore`。
+**客服问答**：上传产品文档/手册，群里问一句 Bot 自动答，不需要手动维护 FAQ。
 
-### 🔁 幂等与重试
-- **幂等**：`event_id` 做幂等键，Redis SETNX + TTL=60s，覆盖飞书重试窗口（3s）。已处理消息直接返回 200，不再往后传。
-- **重试**：每个 HTTP 节点配置指数回退，max_retries=3，retryOnTimeout=true。
-- **超时**：Dify 调用 timeout=60s，文件上传 timeout=30s，连接超时=10s。
+**订单查询**：发订单号直接查，Bot 返回自然语言结果，不用员工去 ERP 里翻。
 
-### 🎯 意图分类（4 路并行分发）
-用 LLM 做意图识别，4 路并行分发路由：
+**故障处理**：发报警截图 + 文字，Bot 解析错误类型，给出处理建议，减少值班压力。
 
-| 意图 | 模型 | 后端 |
-|------|------|------|
-| `order` 订单查询 | qwen3.8-flash | Supabase REST → LLM 转自然语言 |
-| `knowledge` 知识库 | qwen3.8-flash | Dify RAG → top_k=4 + Rerank |
-| `tech` 技术故障 | qwen3.8-flash | LLM 结构化输出（问题摘要/原因/措施） |
-| `business` 商务咨询 | qwen3.7-max | LLM 需求分析 → 发送邮件到 CRM |
-
-避免单一模型扛所有任务，降低调用成本 + 提升准确率。
-
-### 📒 可观测
-结构化 JSON 日志贯穿全链路：
-
-```json
-{
-  "level": "INFO",
-  "request_id": "xxxxxxxx-xxxx",
-  "user_id": "ou_xxxxxxxx",
-  "group_id": "oc_xxxxxxxx",
-  "message_id": "om_xxxxxxxx",
-  "step": "dedup_passed",
-  "latency_ms": 23,
-  "ts": "2026-09-16T04:00:00.000Z"
-}
-```
-
-覆盖节点：`幂等去重 → Token获取 → 问题提取 → Dify调用 → 飞书回复`。
-
-### 🎴 富交互
-飞书消息卡片替代纯文本：
-- Markdown 格式，代码块高亮
-- 底部显示 `request_id`（可追溯）
-- 可扩展按钮回调到 n8n 形成"二段式交互"（赞/踩反馈 → 人工介入）
-
-### ⚡ Token 缓存
-飞书 `tenant_access_token` 有效期 2h，用内存缓存（TTL=7100s），避免每次请求都调一次 auth 接口。
+**视觉问答**：上传商品图片问有没有货，Bot 理解图片内容后回答，适用于电商/采购场景。
 
 ---
 
-## 🧰 技术栈
+## 🔐 密钥隔离
 
-| 类别 | 选型 | 我看重什么 |
-|------|------|-----------|
-| 编排 | n8n | 可视化 + 重试 + HTTP 节点生态 |
-| LLM 应用 | Dify | Prompt 版本化、知识库、意图分类、Agent 编排 |
-| IM | 飞书机器人 + 事件订阅 | 国内生态、卡片交互、企业权限模型 |
-| 数据库 | Supabase | REST API 快、内置鉴权、行级安全 |
-| 视觉解析 | hohoAPI (gpt-5.5) | 多模态模型快速接入 |
-| 可观测 | 结构化 JSON 日志 | 每节点打日志，request_id 贯穿全链路 |
+所有密钥注入到 `.env`，配置文件中只保留 `{{ $env.XXX }}` 占位符。`.env` 不进仓库。
 
 ---
 
-## 🚀 一键部署
+## 🚀 快速上手
 
 ```bash
 # 1. 复制环境变量
 cp .env.example .env
-# 填入真实密钥（.env 已加入 .gitignore，不会提交）
+# 填入真实密钥
 
 # 2. 导入 n8n 工作流
 # n8n 编辑器 → Import → 选择 飞书AI知识库+查订单.json
@@ -149,37 +113,26 @@ cp .env.example .env
 # 4. 配置飞书事件订阅
 # 飞书开放平台 → 机器人 → 事件订阅 → 指向 n8n Webhook URL
 
-# 5. 群里发消息 → Bot 自动回复
+# 5. 群里 @Bot 发消息
 ```
 
 ---
 
-## 🛣️ Roadmap
+## 🧠 我从这个项目学到的东西
 
-- [ ] **流式卡片**：用 SSE + 飞书 `chat.update_card` 实现打字机效果
-- [ ] **多租户路由**：`chat_id → Dify app` 的映射表，配置化管理
-- [ ] **知识库版本切换**：在群里 `/kb <name>` 临时切换 Dify 数据集
-- [ ] **可观测面板**：Grafana + Loki，把"用户体验"和"系统健康"合在一张图
-
----
-
-## 🧠 我从这个项目学到/反思的东西
-
-- **编排工具不是越多越好**：n8n + Dify 已经覆盖了 80% 场景，**过度工程**只会带来双重配置成本。
-- **"成体系" 比 "跑通 demo" 重要**：幂等、重试、Token 缓存、日志追溯这些"枯燥"的部分，正是区分玩具和生产的关键。
-- **协议优先于实现**：所有节点只依赖 HTTP/JSON，未来替换其中任何一家厂商都不会雪崩。
-- **主动暴露缺陷更有说服力**：坑 1~3 都是真实踩过的，说出来比"完美 demo"可信度高一个量级。
+- **工具选型要面向使用者**：不是"这个技术厉害"，而是"谁能用它、怎么用它"。
+- **运营能力比开发能力更重要**：AI 客服的价值不在上线那天，在每一天调优 Prompt、迭代知识库的过程里。
+- **"零代码"不等于"简单"**：三个工具各有边界，清楚它们各自擅长什么，才能组合出真正可用的系统。
 
 ---
 
 ## 👤 关于我
 
 - **个人项目**，独立完成设计 / 开发 / 文档 / 部署
-- 技术栈：**n8n · Dify · Feishu · Supabase · Docker · 可观测**
-- 想看我其他作品 / 简历：见 GitHub Profile
+- 想看我其他作品：[GitHub Profile](https://github.com/sodacovo)
 
 ---
 
 <p align="center">
-  <sub>📫 欢迎 Fork / Star，欢迎面试官在 Issues / Discussions 里与我讨论。</sub>
+  <sub>📫 欢迎 Fork / Star，欢迎在 Issues 里与我讨论。</sub>
 </p>
