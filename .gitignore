@@ -1,0 +1,47 @@
+# 密钥（绝对不能提交）
+.env
+.env.local
+.env.*.local
+.env.example.bak
+secrets/
+
+# 大文件（演示视频等放 README 链接，不要进仓库）
+*.mp4
+*.zip
+*.tar.gz
+*.7z
+*.rar
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 依赖
+node_modules/
+__pycache__/
+.venv/
+venv/
+*.pyc
+
+# 日志
+*.log
+logs/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 其他项目（不要进这个仓库）
+实习材料/
+muxi_shop/
+简历/
+Codex-SOP/
+docs/
+
+# 构建产物
+dist/
+build/
+*.tsbuildinfo
