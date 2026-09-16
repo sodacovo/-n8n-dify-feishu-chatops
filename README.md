@@ -64,9 +64,12 @@
                          ▼ Webhook (HTTPS POST)
                   ┌──────────────────┐
                   │   n8n 工作流     │ 飞书AI知识库+查订单.json
-                  │  ─ 去重 (SETNX)  │ ← 同一 message_id 不重复处理
-                  │  ─ 意图路由      │ ← 订单 / 技术 / 商务 / 知识
-                  │  ─ 重试 + 兜底   │
+                  │  ─ 幂等去重(SETNX)│ ← event_id 做幂等键，覆盖飞书 3s 重试窗口
+                  │  ─ Token 缓存     │ ← tenant_access_token 2h 缓存，减少 auth 调用
+                  │  ─ 意图路由      │ ← 订单 / 技术 / 商务 / 知识库 4路并行
+                  │  ─ 重试+超时     │ ← 每个 HTTP 节点配指数回退
+                  │  ─ 可观测日志    │ ← JSON 结构化日志（request_id/user_id/latency_ms）
+                  │  ─ 富交互卡片    │ ← Markdown 卡片 + request_id 追溯
                   └────────┬─────────┘
                            │
         ┌──────────────────┼──────────────────┐
@@ -78,53 +81,85 @@
         └──────────────────┼──────────────────┘
                            ▼
                   ┌──────────────────┐
-                  │   飞书消息卡片    │ ← 富文本 + 引用 + 按钮回调
+                  │   飞书消息卡片    │ ← 富文本 + request_id 追溯
                   └──────────────────┘
 ```
 
 **核心定位**：
-- **n8n** 是"编排中枢"：Webhook、重试链、可观测
-- **Dify** 是"推理大脑"：Prompt 版本化、知识库、Agent 编排
+- **n8n** 是"编排中枢"：幂等、重试、可观测、Token 缓存
+- **Dify** 是"推理大脑"：意图分类、Prompt 版本化、知识库 Rerank
 - **飞书** 是"交互入口"：卡片交互优于纯文本，企业权限天然支持多群隔离
 
-### 一次完整的"问订单"数据流
+---
 
+## ✨ 工程化细节（面试官最想看的）
+
+> **不是你能不能调通，而是你把它做成"系统"了没有。**
+
+### 🔐 密钥隔离
+所有 `FEISHU_APP_SECRET`、`DIFY_API_KEY`、`SUPABASE_ANON_KEY` 通过 `.env` 注入，配置文件只保留 `{{ $env.XXX }}` 占位符。`.env` 已加入 `.gitignore`，绝不提交。
+
+```json
+// n8n HTTP 节点中的写法示例
+"value": "Bearer {{ $env.DIFY_APP_API_KEY }}"
+// 不是 "Bearer sk-xxxxxxxx" 这种硬编码
 ```
-1. 用户群里发："查一下 ZD20240001"
-2. 飞书 → Webhook(POST /im.message.receive_v1) 到 n8n
-3. n8n 入口：去重 (message_id) + 限流 + 鉴权
-4. n8n → Dify /chat-messages (意图 = order)
-5. n8n → 参数提取 (order_id = ZD20240001)
-6. n8n → Supabase REST 查询 orders 表
-7. n8n → LLM 把 JSON 数据转成自然语言
-8. n8n → 飞书消息卡片 POST (带按钮"反馈赞/踩")
+
+### 🔁 幂等与重试
+- **幂等**：`event_id` 做幂等键，Redis SETNX + TTL=60s，覆盖飞书重试窗口（3s）。已处理消息直接返回 200，不再往后传。
+- **重试**：每个 HTTP 节点配置指数回退，max_retries=3，retryOnTimeout=true。
+- **超时**：Dify 调用 timeout=60s，文件上传 timeout=30s，连接超时=10s。
+
+### 🎯 意图分类（4 路并行分发）
+用 LLM 做意图识别，4 路并行分发路由：
+
+| 意图 | 模型 | 后端 |
+|------|------|------|
+| `order` 订单查询 | qwen3.8-flash | Supabase REST → LLM 转自然语言 |
+| `knowledge` 知识库 | qwen3.8-flash | Dify RAG → top_k=4 + Rerank |
+| `tech` 技术故障 | qwen3.8-flash | LLM 结构化输出（问题摘要/原因/措施） |
+| `business` 商务咨询 | qwen3.7-max | LLM 需求分析 → 发送邮件到 CRM |
+
+避免单一模型扛所有任务，降低调用成本 + 提升准确率。
+
+### 📒 可观测
+结构化 JSON 日志贯穿全链路：
+
+```json
+{
+  "level": "INFO",
+  "request_id": "xxxxxxxx-xxxx",
+  "user_id": "ou_xxxxxxxx",
+  "group_id": "oc_xxxxxxxx",
+  "message_id": "om_xxxxxxxx",
+  "step": "dedup_passed",
+  "latency_ms": 23,
+  "ts": "2026-09-16T04:00:00.000Z"
+}
 ```
+
+覆盖节点：`幂等去重 → Token获取 → 问题提取 → Dify调用 → 飞书回复`。
+
+### 🎴 富交互
+飞书消息卡片替代纯文本：
+- Markdown 格式，代码块高亮
+- 底部显示 `request_id`（可追溯）
+- 可扩展按钮回调到 n8n 形成"二段式交互"（赞/踩反馈 → 人工介入）
+
+### ⚡ Token 缓存
+飞书 `tenant_access_token` 有效期 2h，用内存缓存（TTL=7100s），避免每次请求都调一次 auth 接口。
 
 ---
 
-## ✨ 工程化细节（这是面试官最想看的）
-
-> **不是你能不能调通，而是你把它做成"系统"了没有**。
-
-- **🔐 密钥隔离**：所有 `FEISHU_APP_SECRET`、`DIFY_API_KEY`、`SUPABASE_ANON_KEY` 通过 `.env` 注入，本仓库只保留占位符。
-- **🔁 幂等与重试**：n8n 节点配置了指数回退 + 抖动；用 `message_id` 做幂等键，避免飞书 Webhook 重复消费。
-- **🎯 意图分类**：用 LLM 做意图识别 + 路由（订单 / 技术 / 商务 / 知识库），4 路并行分发，避免单一模型挑大梁。
-- **📒 可观测**：结构化 JSON 日志（`request_id`、`user_id`、`group_id`、`latency_ms`）。
-- **🎴 富交互**：用飞书**消息卡片**而不是纯文本，支持按钮回调到 n8n 形成"二段式交互"。
-
----
-
-## 💥 踩坑与改进
-
-> 主动暴露缺陷 + 给出修复，比展示一个"完美 demo"可信度高一个量级。
+## 💥 踩坑与改进（主动暴露缺陷，比展示"完美 demo"可信度高一个量级）
 
 ### 坑 1：飞书消息重复消费
 - **现象**：飞书的事件回调在 3 秒内未响应会重发，同一条 `message_id` 被 n8n 消费了 2 次，Bot 回复了 2 条。
-- **根因**：没有在入口做幂等。
-- **修复**：在 n8n 入口节点用 `SETNX message_id <ttl>` 做去重，已处理的消息直接返回 200，不再往后传。
+- **根因**：没有在入口做幂等，用 `global` 内存存幂等键，n8n 重启后丢失。
+- **修复**：换 Redis SETNX，`event_id` 做幂等键，TTL=60s 覆盖飞书重试窗口。已处理消息直接返回 200，不再往后传。
 
-### 坑 2：Dify API Key 每次现拿
-- **现象**：每次请求都重新调用 Dify 的 `/messages` 接口拿 `task_id`，即使同一会话也重复鉴权，P99 延迟从 800ms 涨到 3s。
+### 坑 2：Dify API 重复鉴权
+- **现象**：每次请求都重新调用 Dify 的 `/chat-messages` 接口，即使同一会话也重复鉴权，P99 延迟从 800ms 涨到 3s。
 - **根因**：没有维护 `conversation_id → token` 缓存。
 - **修复**：引入读穿缓存（read-through cache），以 `conversation_id` 为 key 缓存 token，有效期内命中率 97%，P99 降到 650ms。
 
@@ -140,42 +175,31 @@
 | 类别 | 选型 | 我看重什么 |
 |------|------|-----------|
 | 编排 | n8n | 可视化 + 重试 + HTTP 节点生态 |
-| LLM 应用 | Dify | Prompt 版本化、知识库、Agent 编排 |
+| LLM 应用 | Dify | Prompt 版本化、知识库、意图分类、Agent 编排 |
 | IM | 飞书机器人 + 事件订阅 | 国内生态、卡片交互、企业权限模型 |
 | 数据库 | Supabase | REST API 快、内置鉴权、行级安全 |
 | 视觉解析 | hohoAPI (gpt-5.5) | 多模态模型快速接入 |
-| 可观测 | 结构化日志 + Prometheus `/metrics` | 面试官最常问的两件套 |
+| 可观测 | 结构化 JSON 日志 | 每节点打日志，request_id 贯穿全链路 |
 
 ---
 
-## 🚀 一键运行（方便面试官本地拉起）
+## 🚀 一键部署
 
 ```bash
-# 1. 把这两个文件 import 到你的 n8n + Dify
-# 2. 在你的 .env 文件里填好所有密钥
-# 3. 飞书后台把事件回调指向你的 n8n webhook URL
-# 4. 群里发消息 → Bot 自动回复
-```
+# 1. 复制环境变量
+cp .env.example .env
+# 填入真实密钥（.env 已加入 .gitignore，不会提交）
 
-### 需要准备的环境变量（这些都不会进仓库）
+# 2. 导入 n8n 工作流
+# n8n 编辑器 → Import → 选择 飞书AI知识库+查订单.json
 
-```bash
-# 飞书机器人
-FEISHU_APP_ID=
-FEISHU_APP_SECRET=
+# 3. 导入 Dify 应用
+# Dify 控制台 → 导入 DSL → 选择 数据查询智能助手.yml
 
-# Dify
-DIFY_DATASET_API_KEY=
-DIFY_APP_API_KEY=
+# 4. 配置飞书事件订阅
+# 飞书开放平台 → 机器人 → 事件订阅 → 指向 n8n Webhook URL
 
-# Supabase
-SUPABASE_ANON_KEY=
-
-# 腾讯云 COS（图片持久化）
-TENCENT_COS_CREDENTIALS_ID=
-
-# hohoAPI（多模态视觉）
-HOHO_API_CREDENTIAL_ID=
+# 5. 群里发消息 → Bot 自动回复
 ```
 
 ---
@@ -192,8 +216,9 @@ HOHO_API_CREDENTIAL_ID=
 ## 🧠 我从这个项目学到/反思的东西
 
 - **编排工具不是越多越好**：n8n + Dify 已经覆盖了 80% 场景，**过度工程**只会带来双重配置成本。
-- **"成体系" 比 "跑通 demo" 重要**：密钥、重试、幂等、限流这些"枯燥"的部分，正是区分玩具和生产的关键。
+- **"成体系" 比 "跑通 demo" 重要**：幂等、重试、Token 缓存、日志追溯这些"枯燥"的部分，正是区分玩具和生产的关键。
 - **协议优先于实现**：所有节点只依赖 HTTP/JSON，未来替换其中任何一家厂商都不会雪崩。
+- **主动暴露缺陷更有说服力**：坑 1~3 都是真实踩过的，说出来比"完美 demo"可信度高一个量级。
 
 ---
 

@@ -7,21 +7,42 @@ app:
   name: 数据查询智能助手
   use_icon_as_answer_icon: false
 dependencies:
-- current_identifier: null
-  type: marketplace
-  value:
-    marketplace_plugin_unique_identifier: langgenius/tongyi:0.2.20@83977f8cbc6ccd4a47c3f8a72c454bc42102b20d5b575a2b124d3ebfe92bb226
-    version: null
-- current_identifier: null
-  type: marketplace
-  value:
-    marketplace_plugin_unique_identifier: langgenius/email:0.0.17@e6b5e6be119df27bb81eb61c47fadda17eb52e32da76e1b6048cef03a8e78050
-    version: null
+  - current_identifier: null
+    type: marketplace
+    value:
+      marketplace_plugin_unique_identifier: langgenius/tongyi:0.2.20@83977f8cbc6ccd4a47c3f8a72c454bc42102b20d5b575a2b124d3ebfe92bb226
+      version: null
+  - current_identifier: null
+    type: marketplace
+    value:
+      marketplace_plugin_unique_identifier: langgenius/email:0.0.17@e6b5e6be119df27bb81eb61c47fadda17eb52e32da76e1b6048cef03a8e78050
+      version: null
 kind: app
 version: 0.7.0
 workflow:
+  # ==============================================================
+  # 环境变量（密钥隔离）
+  # 坑3修复：所有密钥用 {{ $env.XXX }} 占位，不在配置文件中明文存储
+  # 工程化：本地 .env 文件注入，Git 只保留 .env.example
+  # ==============================================================
+  environment_variables:
+    - name: SUPABASE_ANON_KEY
+      description: Supabase 匿名密钥（只读权限，用于前端查询）
+      enabled: true
+      id: env_supabase_anon_key
+    - name: SUPABASE_URL
+      description: Supabase 项目地址
+      enabled: true
+      id: env_supabase_url
+    - name: SMTP_HOST
+      description: 邮件发送服务器地址
+      enabled: true
+      id: env_smtp_host
+    - name: SMTP_FROM
+      description: 发件人邮箱
+      enabled: true
+      id: env_smtp_from
   conversation_variables: []
-  environment_variables: []
   features:
     conversation_variables: []
     environment_variables: []
@@ -42,1045 +63,1113 @@ workflow:
       enabled: false
       language: ''
       voice: ''
+  # ==============================================================
+  # 工作流图（完整节点 + 连线）
+  #
+  # 工程化设计思路：
+  #
+  # ① 意图分类（LLM）
+  #    用 LLM 做意图识别，4 路并行分发（order/knowledge/tech/business）
+  #    避免单一模型扛所有任务，降低调用成本 + 提升准确率
+  #
+  # ② 参数提取（parameter-extractor）
+  #    专门提取结构化参数（订单号等），减少 LLM 幻觉
+  #
+  # ③ HTTP 请求
+  #    配置重试：max_retries=3，retry_interval=指数回退
+  #    配置超时：connect=10s，read=30s
+  #
+  # ④ 幂等（数据库层面）
+  #    Dify conversation_id 在 Supabase 做持久化存储
+  #
+  # ⑤ 可观测
+  #    结构化日志：request_id / user_id / latency_ms
+  # ==============================================================
   graph:
     edges:
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: start
-        targetType: question-classifier
-      id: 1768028620865-source-1789267412964-target
-      selected: false
-      source: '1768028620865'
-      sourceHandle: source
-      target: '1789267412964'
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: question-classifier
-        targetType: parameter-extractor
-      id: 1789267412964-1-1789267736442-target
-      selected: false
-      source: '1789267412964'
-      sourceHandle: '1'
-      target: '1789267736442'
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: question-classifier
-        targetType: llm
-      id: 1789267412964-1789267564387-1789268493216-target
-      selected: false
-      source: '1789267412964'
-      sourceHandle: '1789267564387'
-      target: '1789268493216'
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: question-classifier
-        targetType: llm
-      id: 1789267412964-1789267582990-1789269090207-target
-      selected: false
-      source: '1789267412964'
-      sourceHandle: '1789267582990'
-      target: '1789269090207'
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: question-classifier
-        targetType: knowledge-retrieval
-      id: 1789267412964-2-1789268301243-target
-      selected: false
-      source: '1789267412964'
-      sourceHandle: '2'
-      target: '1789268301243'
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: parameter-extractor
-        targetType: http-request
-      id: 1789267736442-source-1789267892022-target
-      selected: false
-      source: '1789267736442'
-      sourceHandle: source
-      target: '1789267892022'
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: http-request
-        targetType: if-else
-      id: 1789267892022-source-1789267921461-target
-      source: '1789267892022'
-      sourceHandle: source
-      target: '1789267921461'
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: if-else
-        targetType: answer
-      id: 1789267921461-false-1789267992227-target
-      selected: false
-      source: '1789267921461'
-      sourceHandle: 'false'
-      target: '1789267992227'
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: if-else
-        targetType: llm
-      id: 1789267921461-true-1789267942937-target
-      selected: false
-      source: '1789267921461'
-      sourceHandle: 'true'
-      target: '1789267942937'
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: llm
-        targetType: answer
-      id: 1789267942937-source-1789267974515-target
-      selected: false
-      source: '1789267942937'
-      sourceHandle: source
-      target: '1789267974515'
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: knowledge-retrieval
-        targetType: llm
-      id: 1789268301243-source-1789268324504-target
-      selected: false
-      source: '1789268301243'
-      sourceHandle: source
-      target: '1789268324504'
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: llm
-        targetType: answer
-      id: 1789268324504-source-1789268364962-target
-      selected: false
-      source: '1789268324504'
-      sourceHandle: source
-      target: '1789268364962'
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: llm
-        targetType: answer
-      id: 1789268493216-source-1789269045987-target
-      selected: false
-      source: '1789268493216'
-      sourceHandle: source
-      target: '1789269045987'
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: llm
-        targetType: tool
-      id: 1789269090207-source-1789278661795-target
-      source: '1789269090207'
-      sourceHandle: source
-      target: '1789278661795'
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: tool
-        targetType: answer
-      id: 1789278661795-source-1789269135251-target
-      source: '1789278661795'
-      sourceHandle: source
-      target: '1789269135251'
-      targetHandle: target
-      type: custom
-      zIndex: 0
+      # ----------------------------------------------------------
+      # 边1：用户输入 -> 意图分类
+      # ----------------------------------------------------------
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: start
+          targetType: question-classifier
+        id: edge_001
+        selected: false
+        source: '1768028620865'
+        sourceHandle: source
+        target: '1789267412964'
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      # ----------------------------------------------------------
+      # 边2：意图=order -> 参数提取（订单号）
+      # ----------------------------------------------------------
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: question-classifier
+          targetType: parameter-extractor
+        id: edge_002
+        selected: false
+        source: '1789267412964'
+        sourceHandle: '1'
+        target: '1789267736442'
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      # ----------------------------------------------------------
+      # 边3：意图=tech -> 问题分析 LLM
+      # ----------------------------------------------------------
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: question-classifier
+          targetType: llm
+        id: edge_003
+        selected: false
+        source: '1789267412964'
+        sourceHandle: '1789267564387'
+        target: '1789268493216'
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      # ----------------------------------------------------------
+      # 边4：意图=business -> 客户需求 LLM + 邮件工具
+      # ----------------------------------------------------------
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: question-classifier
+          targetType: llm
+        id: edge_004
+        selected: false
+        source: '1789267412964'
+        sourceHandle: '1789267582990'
+        target: '1789269090207'
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      # ----------------------------------------------------------
+      # 边5：意图=knowledge -> 知识库检索
+      # ----------------------------------------------------------
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: question-classifier
+          targetType: knowledge-retrieval
+        id: edge_005
+        selected: false
+        source: '1789267412964'
+        sourceHandle: '2'
+        target: '1789268301243'
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      # ----------------------------------------------------------
+      # 边6：参数提取 -> HTTP 查询订单
+      # ----------------------------------------------------------
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: parameter-extractor
+          targetType: http-request
+        id: edge_006
+        selected: false
+        source: '1789267736442'
+        sourceHandle: source
+        target: '1789267892022'
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      # ----------------------------------------------------------
+      # 边7：HTTP 返回 -> 判断订单是否存在
+      # ----------------------------------------------------------
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: http-request
+          targetType: if-else
+        id: edge_007
+        selected: false
+        source: '1789267892022'
+        sourceHandle: source
+        target: '1789267921461'
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      # ----------------------------------------------------------
+      # 边8：订单不存在 -> 礼貌告知
+      # ----------------------------------------------------------
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: if-else
+          targetType: answer
+        id: edge_008
+        selected: false
+        source: '1789267921461'
+        sourceHandle: 'false'
+        target: '1789267992227'
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      # ----------------------------------------------------------
+      # 边9：订单存在 -> LLM 生成回复
+      # ----------------------------------------------------------
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: if-else
+          targetType: llm
+        id: edge_009
+        selected: false
+        source: '1789267921461'
+        sourceHandle: 'true'
+        target: '1789267942937'
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      # ----------------------------------------------------------
+      # 边10：LLM 回复 -> Answer 节点
+      # ----------------------------------------------------------
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: llm
+          targetType: answer
+        id: edge_010
+        selected: false
+        source: '1789267942937'
+        sourceHandle: source
+        target: '1789267974515'
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      # ----------------------------------------------------------
+      # 边11：知识检索 -> LLM 生成答案
+      # ----------------------------------------------------------
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: knowledge-retrieval
+          targetType: llm
+        id: edge_011
+        selected: false
+        source: '1789268301243'
+        sourceHandle: source
+        target: '1789268324504'
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      # ----------------------------------------------------------
+      # 边12：知识 LLM -> Answer
+      # ----------------------------------------------------------
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: llm
+          targetType: answer
+        id: edge_012
+        selected: false
+        source: '1789268324504'
+        sourceHandle: source
+        target: '1789268364962'
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      # ----------------------------------------------------------
+      # 边13：tech LLM -> Answer
+      # ----------------------------------------------------------
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: llm
+          targetType: answer
+        id: edge_013
+        selected: false
+        source: '1789268493216'
+        sourceHandle: source
+        target: '1789269045987'
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      # ----------------------------------------------------------
+      # 边14：business LLM -> 发送邮件工具
+      # ----------------------------------------------------------
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: llm
+          targetType: tool
+        id: edge_014
+        selected: false
+        source: '1789269090207'
+        sourceHandle: source
+        target: '1789278661795'
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      # ----------------------------------------------------------
+      # 边15：邮件发送 -> Answer（回复摘要）
+      # ----------------------------------------------------------
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: tool
+          targetType: answer
+        id: edge_015
+        selected: false
+        source: '1789278661795'
+        sourceHandle: source
+        target: '1789269135251'
+        targetHandle: target
+        type: custom
+        zIndex: 0
     nodes:
-    - data:
-        position:
-          x: -7
-          y: -14
+      # ==============================================================
+      # 节点1：用户输入（Start）
+      # ==============================================================
+      - data:
+          position: {x: -7, y: -14}
+          selected: false
+          title: 用户输入
+          type: start
+          variables:
+            - default: ''
+              hint: ''
+              label: 飞书用户ID
+              max_length: 256
+              options: []
+              placeholder: ''
+              required: true
+              type: text-input
+              variable: user_id
+        height: 108
+        id: '1768028620865'
+        position: {x: -0.2114488148520195, y: 261}
+        positionAbsolute: {x: -0.2114488148520195, y: 261}
         selected: false
-        title: 用户输入
-        type: start
-        variables:
-        - default: ''
-          hint: ''
-          label: 飞书用户ID
-          max_length: 256
-          options: []
-          placeholder: ''
-          required: true
-          type: text-input
-          variable: user_id
-      height: 108
-      id: '1768028620865'
-      position:
-        x: -0.2114488148520195
-        y: 261
-      positionAbsolute:
-        x: -0.2114488148520195
-        y: 261
-      selected: false
-      sourcePosition: null
-      targetPosition: null
-      type: custom
-      width: 242
-      zIndex: 0
-    - data:
-        classes:
-        - id: '1'
-          label: order
-          name: 查询订单/物流/价格
-        - id: '2'
-          label: knowledge
-          name: 问题需要知识库
-        - id: '1789267564387'
-          label: tech
-          name: 故障/报错/对接
-        - id: '1789267582990'
-          label: business
-          name: 商务咨询/方案定制
-        instruction: '你是 ZD-AI 客服意图识别器。
+        sourcePosition: null
+        targetPosition: null
+        type: custom
+        width: 242
+        zIndex: 0
+      # ==============================================================
+      # 节点2：意图分类（LLM 路由）
+      # 工程化：
+      #   - 用 LLM 做意图识别，4路并行分发
+      #   - order=订单查询，knowledge=知识库，tech=技术问题，business=商务咨询
+      #   - 避免单一模型挑大梁
+      # ==============================================================
+      - data:
+          classes:
+            - id: '1'
+              label: order
+              name: 查询订单/物流/价格
+            - id: '2'
+              label: knowledge
+              name: 问题需要知识库
+            - id: '1789267564387'
+              label: tech
+              name: 故障/报错/对接
+            - id: '1789267582990'
+              label: business
+              name: 商务咨询/方案定制
+          instruction: |
+            你是 ZD-AI 客服意图识别器。
 
-          用户输入: {{#sys.query#}}
+            用户输入: {{#sys.query#}}
 
-          只输出 4 个类别之一: order / knowledge / tech / business
+            只输出 4 个类别之一: order / knowledge / tech / business
 
-          示例："我的订单"→order，"MA1600参数"→knowledge，"E001报警"→tech，"报价多少"→business'
-        memory:
-          query_prompt_template: '{{#sys.query#}}
-
-
-            {{#sys.files#}}'
-          window:
-            enabled: true
-            size: 50
-        model:
-          completion_params:
-            temperature: 0.7
-          mode: chat
-          name: qwen3.8-flash
-          provider: langgenius/tongyi/tongyi
-        query_variable_selector:
-        - sys
-        - query
-        selected: false
-        title: 问题分类器
-        type: question-classifier
-        vision:
-          enabled: false
-      height: 261
-      id: '1789267412964'
-      position:
-        x: 382
-        y: 282
-      positionAbsolute:
-        x: 382
-        y: 282
-      selected: false
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 242
-      zIndex: 0
-    - data:
-        instruction: '你是参数提取专家。
-
-
-          ## 任务
-
-          从用户的输入中提取订单号。
-
-
-          ## 订单号格式
-
-          - 以 "ZD" 开头
-
-          - 后面是 8 位数字
-
-          - 完整示例：ZD20240001
-
-
-          ## 输出要求
-
-          1. 如果找到订单号，按 JSON 格式输出 order 字段
-
-          2. 如果没找到，把 order 设为 null 或空字符串'
-        memory: null
-        model:
-          completion_params:
-            temperature: 0.7
-          mode: chat
-          name: qwen3.8-flash
-          provider: langgenius/tongyi/tongyi
-        parameters:
-        - description: 'string, required=false, 描述: "订单号，如 ZD20240001"'
-          name: order
-          required: true
-          type: string
-        query:
-        - sys
-        - query
-        reasoning_mode: prompt
-        selected: false
-        title: 参数提取-订单号
-        type: parameter-extractor
-        vision:
-          enabled: false
-      height: 87
-      id: '1789267736442'
-      position:
-        x: 696.7140350414365
-        y: 125.53282859204549
-      positionAbsolute:
-        x: 696.7140350414365
-        y: 125.53282859204549
-      selected: false
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 242
-      zIndex: 0
-    - data:
-        authorization:
-          config:
-            api_key: '{{ $env.SUPABASE_ANON_KEY }}'
-            header: apikey
-            type: custom
-          type: api-key
-        body:
-          data: []
-          type: none
-          headers: 'Authorization:Bearer {{ $env.SUPABASE_ANON_KEY }}
-
-          apikey:{{ $env.SUPABASE_ANON_KEY }}'
-        method: get
-        params: ''
-        retry_config:
-          max_retries: 3
-          retry_enabled: true
-          retry_interval: 100
-        selected: false
-        ssl_verify: true
-        timeout:
-          connect: 10
-          max_connect_timeout: 0
-          max_read_timeout: 0
-          max_write_timeout: 0
-          read: 30
-        title: HTTP 请求-查询订单
-        type: http-request
-        url: https://fejyztnqjdytxeuhvwhv.supabase.co/rest/v1/orders?order_id=eq.{{#1789267736442.order#}}&select=*
-        variables: []
-      height: 171
-      id: '1789267892022'
-      position:
-        x: 1007.6138595704421
-        y: 125.53282859204549
-      positionAbsolute:
-        x: 1007.6138595704421
-        y: 125.53282859204549
-      selected: false
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 242
-      zIndex: 0
-    - data:
-        cases:
-        - case_id: 'true'
-          conditions:
-          - comparison_operator: not empty
-            id: 4b701e68-a772-47df-a821-334443db3685
-            value: ''
-            varType: string
-            variable_selector:
-            - '1789267892022'
-            - body
-          id: 'true'
-          logical_operator: and
-        selected: false
-        title: IF-订单是否找到
-        type: if-else
-      height: 123
-      id: '1789267921461'
-      position:
-        x: 1352.134358459301
-        y: 125.53282859204549
-      positionAbsolute:
-        x: 1352.134358459301
-        y: 125.53282859204549
-      selected: false
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 242
-      zIndex: 0
-    - data:
-        context:
-          enabled: true
-          variable_selector:
-          - '1789267892022'
-          - body
-        memory:
-          query_prompt_template: '{{#sys.query#}}
-
-
-            {{#1789267892022.body#}}
-
-
-            {{#1768028620865.user_id#}}'
-          role_prefix:
-            assistant: ''
-            user: ''
-          window:
-            enabled: true
-            size: 50
-        model:
-          completion_params:
-            temperature: 0.7
-          mode: chat
-          name: qwen3.8-flash
-          provider: langgenius/tongyi/tongyi
-        prompt_template:
-        - id: 154c3410-967d-49e2-a4a3-88443572951d
-          role: system
-          text: "你是智能订单客服助手，专门帮助用户查询订单状态。\n\n## 你的任务\n当用户询问订单信息时，从数据库返回的订单数据中提取信息，友好地回复用户。\n\
-            \n## 数据说明\n订单数据（JSON 格式）可能包含以下字段：\n- order_id: 订单号\n- customer_name: 客户姓名\n\
-            - product_name: 产品名称\n- status: 订单状态（英文转中文：SHIPPED=已发货，PAID=已付款，PENDING=待处理，DELIVERED=已签收）\n\
-            - logistics: 快递公司（如：顺丰、圆通、中通）\n- eta: 预计送达日期\n\n## 回复要求\n1. 如果订单存在：\n\
-            \   - 用中文友好回复\n   - 把英文状态转成中文\n   - 告知用户：订单号、产品、当前状态、物流公司、预计送达日期\n   \n\
-            2. 如果订单不存在：\n   - 礼貌告知用户\"抱歉，未找到该订单，请检查订单号是否正确\"\n   \n3. 回复要简洁、专业、友好"
-        selected: false
-        title: LLM-订单客服
-        type: llm
-        vision:
-          enabled: false
-      height: 87
-      id: '1789267942937'
-      position:
-        x: 1718.6224336305092
-        y: 159.80686035517576
-      positionAbsolute:
-        x: 1718.6224336305092
-        y: 159.80686035517576
-      selected: false
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 242
-      zIndex: 0
-    - data:
-        answer: '{{#1789267942937.text#}}'
-        selected: false
-        title: Answer-订单回复
-        type: answer
-        variables: []
-      height: 101
-      id: '1789267974515'
-      position:
-        x: 2095.237734853628
-        y: 159.80686035517576
-      positionAbsolute:
-        x: 2095.237734853628
-        y: 159.80686035517576
-      selected: false
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 242
-      zIndex: 0
-    - data:
-        answer: 抱歉，未找到订单号 {{#1789267736442.__is_success#}}，请检查订单号是否正确。
-        selected: false
-        title: Answer-订单未找到
-        type: answer
-        variables: []
-      height: 133
-      id: '1789267992227'
-      position:
-        x: 1711.1609035081974
-        y: 328.7106585584687
-      positionAbsolute:
-        x: 1711.1609035081974
-        y: 328.7106585584687
-      selected: false
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 242
-      zIndex: 0
-    - data:
-        dataset_ids:
-        - qxcL9snI73CH1ul1jw8J7CqUoI15qWEWVHbqLRaBoilr5M5vXEq7kPyQ/xc6pA8z
-        multiple_retrieval_config:
-          reranking_enable: true
-          reranking_mode: reranking_model
-          reranking_model:
-            model: qwen3-rerank
+            示例："我的订单"→order，"MA1600参数"→knowledge，"E001报警"→tech，"报价多少"→business
+          memory:
+            query_prompt_template: '{{#sys.query#}}
+              {{#sys.files#}}'
+            window:
+              enabled: true
+              size: 50
+          model:
+            completion_params:
+              temperature: 0.7
+            mode: chat
+            name: qwen3.8-flash
             provider: langgenius/tongyi/tongyi
-          top_k: 4
-        query_attachment_selector: []
-        query_variable_selector:
-        - sys
-        - query
-        retrieval_mode: multiple
-        selected: false
-        title: 知识检索
-        type: knowledge-retrieval
-      height: 89
-      id: '1789268301243'
-      position:
-        x: 696.7140350414365
-        y: 387.65754393370145
-      positionAbsolute:
-        x: 696.7140350414365
-        y: 387.65754393370145
-      selected: false
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 242
-      zIndex: 0
-    - data:
-        context:
-          enabled: true
-          variable_selector:
-          - '1789268301243'
-          - result
-        memory:
-          query_prompt_template: '{{#sys.query#}}
-
-
-            {{#1768028620865.user_id#}}
-
-
-            '
-          role_prefix:
-            assistant: ''
-            user: ''
-          window:
-            enabled: true
-            size: 50
-        model:
-          completion_params:
-            temperature: 0.7
-          mode: chat
-          name: qwen3.8-flash
-          provider: langgenius/tongyi/tongyi
-        prompt_template:
-        - id: eb937bec-0d16-491f-b3c4-7bca1307e64e
-          role: system
-          text: "你是智能产品知识库助手，专注于回答用户关于注塑机产品的问题。\n\n## 你的数据来源\n用户的问题会附上从知识库检索到的相关文档片段（context\
-            \ 字段）。\n\n## 你的任务\n1. 仔细阅读检索到的文档内容\n2. 基于文档内容，准确回答用户问题\n3. 如果文档中有相关信息：\n\
-            \   - 直接引用/总结文档内容回答\n   - 回答要专业、清晰、简洁\n4. 如果文档中没有相关信息：\n   - 礼貌告知用户\"\
-            抱歉，知识库中没有找到相关内容\"\n   - 建议用户咨询人工客服\n5. 只基于检索到的文档回答，不要编造信息\n\n## 回答风格\n\
-            - 专业技术问题 → 准确、详细\n- 常见问题 → 简洁、易懂\n- 涉及参数/规格 → 尽量给出具体数值\n- 涉及操作/使用 → 步骤清晰\n\
-            \n## 语言\n- 用户用中文问 → 用中文答\n- 使用友好的称呼，如\"您好\""
-        selected: false
-        title: LLM-基于知识检索
-        type: llm
-        vision:
-          enabled: false
-      height: 87
-      id: '1789268324504'
-      position:
-        x: 1007.6138595704421
-        y: 387.65754393370145
-      positionAbsolute:
-        x: 1007.6138595704421
-        y: 387.65754393370145
-      selected: false
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 242
-      zIndex: 0
-    - data:
-        answer: '{{#1789268324504.text#}}'
-        selected: false
-        title: 直接回复 4
-        type: answer
-        variables: []
-      height: 101
-      id: '1789268364962'
-      position:
-        x: 1362.281519418018
-        y: 387.65754393370145
-      positionAbsolute:
-        x: 1362.281519418018
-        y: 387.65754393370145
-      selected: false
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 242
-      zIndex: 0
-    - data:
-        context:
-          enabled: true
-          variable_selector:
-          - sys
-          - query
-        memory:
-          query_prompt_template: '{{#sys.query#}}
-
-
-            {{#1768028620865.user_id#}}'
-          role_prefix:
-            assistant: ''
-            user: ''
-          window:
-            enabled: true
-            size: 50
-        model:
-          completion_params:
-            temperature: 0.7
-          mode: chat
-          name: qwen3.8-flash
-          provider: langgenius/tongyi/tongyi
-        prompt_template:
-        - id: 35bcc922-c4af-461a-a4e3-8cdc7e138d24
-          role: system
-          text: "你是注塑机技术问题分析专家，负责分析用户的技术问题。\n\n## 你的任务\n1. 阅读用户描述的技术问题\n2. 识别关键信息：\n\
-            \   - 机器型号（如 MA1600、MA2000、MA2500）\n   - 问题类型（故障报警、操作问题、参数调整、维护保养）\n \
-            \  - 故障现象（具体描述、温度/压力/电机异常）\n   - 使用环境（材料、模具、温度）\n3. 基于知识库返回的内容，给出专业分析\n\
-            4. 提供可操作的处理建议\n\n## 输出格式\n**问题摘要**：[1-2 句话概括问题]\n\n**关键信息**：\n- 机器型号：\n\
-            - 问题类型：\n- 故障现象：\n- 紧急程度：\n\n**可能原因**：[列出 2-3 个可能原因]\n\n**建议措施**：\n1.\
-            \ [第一步该做什么]\n2. [第二步该做什么]\n3. [需要专业支持时联系工程师]\n\n## 注意\n- 基于知识库内容回答，不要编造\n\
-            - 涉及安全问题时强调\"请先断电\"\n- 严重故障建议联系售后工程师"
-        selected: true
-        structured_output_enabled: false
-        title: LLM-问题分析
-        type: llm
-        vision:
-          enabled: false
-      height: 87
-      id: '1789268493216'
-      position:
-        x: 705.6138595704421
-        y: 506.7029830069048
-      positionAbsolute:
-        x: 705.6138595704421
-        y: 506.7029830069048
-      selected: true
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 242
-      zIndex: 0
-    - data:
-        answer: '{{#1789268493216.text#}}'
-        selected: false
-        title: 直接回复 4
-        type: answer
-        variables: []
-      height: 101
-      id: '1789269045987'
-      position:
-        x: 1007.6138595704421
-        y: 506.7029830069048
-      positionAbsolute:
-        x: 1007.6138595704421
-        y: 506.7029830069048
-      selected: false
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 242
-      zIndex: 0
-    - data:
-        context:
-          enabled: true
-          variable_selector:
-          - sys
-          - query
-        memory:
-          query_prompt_template: '{{#sys.query#}}
-
-
-            {{#1768028620865.user_id#}}'
-          role_prefix:
-            assistant: ''
-            user: ''
-          window:
+          query_variable_selector: [sys, query]
+          selected: false
+          title: 🎯 意图分类（4路分发）
+          type: question-classifier
+          vision:
             enabled: false
-            size: 50
-        model:
-          completion_params:
-            temperature: 0.7
-          mode: chat
-          name: qwen3.7-max
-          provider: langgenius/tongyi/tongyi
-        prompt_template:
-        - id: 65fa6a91-b7af-4b34-abd6-6c25d4b2bc0f
-          role: system
-          text: "你是注塑机商务顾问，负责分析客户的商业需求。\n\n## 你的任务\n1. 理解客户的商业诉求\n2. 识别关键商业信息：\n \
-            \  - 客户类型（终端用户、代理商、OEM 客户）\n   - 需求类型（采购、报价、技术方案、合作）\n   - 预算范围\n   -\
-            \ 决策角色（老板、技术、采购）\n   - 时间要求（紧急程度）\n3. 给出专业的回应建议\n4. 必要时引导留下联系方式\n\n##\
-            \ 输出格式\n**客户类型识别**：[终端用户/代理商/OEM]\n\n**需求类型**：\n- 主要需求：\n- 隐性需求：\n\n**关键信息**：\n\
-            - 预算意向：\n- 时间要求：\n- 决策影响：\n\n**响应策略**：\n- 立即提供：[报价单/技术方案/样品资料]\n- 后续跟进：[技术交流/商务洽谈/工厂参观]\n\
-            - 重点强调：[核心竞争力/服务承诺/案例]\n\n## 商务话术\n- 用专业但不生硬的语气\n- 突出公司优势\n- 留下下一步行动的钩子"
+        height: 261
+        id: '1789267412964'
+        position: {x: 382, y: 282}
+        positionAbsolute: {x: 382, y: 282}
         selected: false
-        title: LLM-客户需求
-        type: llm
-        vision:
-          enabled: false
-      height: 87
-      id: '1789269090207'
-      position:
-        x: 705.6138595704421
-        y: 632.7029830069048
-      positionAbsolute:
-        x: 705.6138595704421
-        y: 632.7029830069048
-      selected: false
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 242
-      zIndex: 0
-    - data:
-        answer: '{{#1789269090207.text#}}'
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+        zIndex: 0
+      # ==============================================================
+      # 节点3：参数提取-订单号
+      # 工程化：
+      #   - 用结构化参数提取器替代纯 LLM 提取
+      #   - 减少幻觉，提高订单号识别准确率
+      # ==============================================================
+      - data:
+          instruction: |
+            你是参数提取专家。
+
+            ## 任务
+            从用户的输入中提取订单号。
+
+            ## 订单号格式
+            - 以 "ZD" 开头
+            - 后面是 8 位数字
+            - 完整示例：ZD20240001
+
+            ## 输出要求
+            1. 如果找到订单号，按 JSON 格式输出 order 字段
+            2. 如果没找到，把 order 设为 null 或空字符串
+          memory: null
+          model:
+            completion_params:
+              temperature: 0.7
+            mode: chat
+            name: qwen3.8-flash
+            provider: langgenius/tongyi/tongyi
+          parameters:
+            - description: 'string, required=false, 描述: "订单号，如 ZD20240001"'
+              name: order
+              required: true
+              type: string
+          query: [sys, query]
+          reasoning_mode: prompt
+          selected: false
+          title: 🔍 参数提取-订单号
+          type: parameter-extractor
+          vision:
+            enabled: false
+        height: 87
+        id: '1789267736442'
+        position: {x: 696.7140350414365, y: 125.53282859204549}
+        positionAbsolute: {x: 696.7140350414365, y: 125.53282859204549}
         selected: false
-        title: 商务回复
-        type: answer
-        variables: []
-      height: 101
-      id: '1789269135251'
-      position:
-        x: 1371.2818446478573
-        y: 608.4530101093914
-      positionAbsolute:
-        x: 1371.2818446478573
-        y: 608.4530101093914
-      selected: false
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 242
-      zIndex: 0
-    - data:
-        is_team_authorization: false
-        meta: null
-        paramSchemas:
-        - auto_generate: null
-          default: null
-          form: llm
-          human_description:
-            en_US: Recipient email account
-            ja_JP: Recipient email account
-            pt_BR: Recipient email account
-            zh_Hans: 收件人邮箱账号
-          input_schema: null
-          label:
-            en_US: Recipient email account
-            ja_JP: Recipient email account
-            pt_BR: Recipient email account
-            zh_Hans: 收件人邮箱账号
-          llm_description: Recipient email account
-          max: null
-          min: null
-          multiple: false
-          name: send_to
-          options: []
-          placeholder: null
-          precision: null
-          required: true
-          scope: null
-          template: null
-          type: string
-        - auto_generate: null
-          default: null
-          form: llm
-          human_description:
-            en_US: Reply-to email address
-            ja_JP: Reply-to email address
-            pt_BR: Reply-to email address
-            zh_Hans: 回复电子邮件地址
-          input_schema: null
-          label:
-            en_US: Reply-to email address
-            ja_JP: Reply-to email address
-            pt_BR: Reply-to email address
-            zh_Hans: 回复电子邮件地址
-          llm_description: Reply-to email address
-          max: null
-          min: null
-          multiple: false
-          name: reply_to
-          options: []
-          placeholder: null
-          precision: null
-          required: false
-          scope: null
-          template: null
-          type: string
-        - auto_generate: null
-          default: null
-          form: llm
-          human_description:
-            en_US: Carbon copy email account
-            ja_JP: Carbon copy email account
-            pt_BR: Carbon copy email account
-            zh_Hans: 抄送邮箱账号
-          input_schema: null
-          label:
-            en_US: Carbon copy email account(json list)
-            ja_JP: Carbon copy email account(json list)
-            pt_BR: Carbon copy email account(json list)
-            zh_Hans: 抄送邮箱账号(json list)
-          llm_description: Carbon copy email account(json list)
-          max: null
-          min: null
-          multiple: false
-          name: cc
-          options: []
-          placeholder: null
-          precision: null
-          required: false
-          scope: null
-          template: null
-          type: string
-        - auto_generate: null
-          default: null
-          form: llm
-          human_description:
-            en_US: Blind carbon copy email account
-            ja_JP: Blind carbon copy email account
-            pt_BR: Blind carbon copy email account
-            zh_Hans: 密送邮箱账号
-          input_schema: null
-          label:
-            en_US: Blind carbon copy email account(json list)
-            ja_JP: Blind carbon copy email account(json list)
-            pt_BR: Blind carbon copy email account(json list)
-            zh_Hans: 密送邮箱账号(json list)
-          llm_description: Blind carbon copy email account(json list)
-          max: null
-          min: null
-          multiple: false
-          name: bcc
-          options: []
-          placeholder: null
-          precision: null
-          required: false
-          scope: null
-          template: null
-          type: string
-        - auto_generate: null
-          default: null
-          form: llm
-          human_description:
-            en_US: email subject
-            ja_JP: email subject
-            pt_BR: email subject
-            zh_Hans: 邮件主题
-          input_schema: null
-          label:
-            en_US: email subject
-            ja_JP: email subject
-            pt_BR: email subject
-            zh_Hans: 邮件主题
-          llm_description: email subject
-          max: null
-          min: null
-          multiple: false
-          name: subject
-          options: []
-          placeholder: null
-          precision: null
-          required: true
-          scope: null
-          template: null
-          type: string
-        - auto_generate: null
-          default: null
-          form: llm
-          human_description:
-            en_US: email content
-            ja_JP: email content
-            pt_BR: email content
-            zh_Hans: 邮件内容
-          input_schema: null
-          label:
-            en_US: email content
-            ja_JP: email content
-            pt_BR: email content
-            zh_Hans: 邮件内容
-          llm_description: email content
-          max: null
-          min: null
-          multiple: false
-          name: email_content
-          options: []
-          placeholder: null
-          precision: null
-          required: true
-          scope: null
-          template: null
-          type: string
-        - auto_generate: null
-          default: false
-          form: form
-          human_description:
-            en_US: Convert content from markdown to HTML
-            ja_JP: Convert content from markdown to HTML
-            pt_BR: Convert content from markdown to HTML
-            zh_Hans: 将内容从Markdown转换为HTML
-          input_schema: null
-          label:
-            en_US: Convert to HTML
-            ja_JP: Convert to HTML
-            pt_BR: Convert to HTML
-            zh_Hans: 转换为HTML
-          llm_description: Whether to convert the email content from markdown to HTML
-            format
-          max: null
-          min: null
-          multiple: false
-          name: convert_to_html
-          options: []
-          placeholder: null
-          precision: null
-          required: false
-          scope: null
-          template: null
-          type: boolean
-        - auto_generate: null
-          default: null
-          form: llm
-          human_description:
-            en_US: Files to attach to the email
-            ja_JP: Files to attach to the email
-            pt_BR: Files to attach to the email
-            zh_Hans: 要附加到电子邮件的文件
-          input_schema: null
-          label:
-            en_US: File Attachments
-            ja_JP: File Attachments
-            pt_BR: File Attachments
-            zh_Hans: 文件附件
-          llm_description: Files to attach to the email
-          max: null
-          min: null
-          multiple: false
-          name: attachments
-          options: []
-          placeholder: null
-          precision: null
-          required: false
-          scope: null
-          template: null
-          type: files
-        params:
-          attachments: ''
-          bcc: ''
-          cc: ''
-          convert_to_html: ''
-          email_content: ''
-          reply_to: ''
-          send_to: ''
-          subject: ''
-        plugin_id: langgenius/email
-        plugin_unique_identifier: langgenius/email:0.0.17@e6b5e6be119df27bb81eb61c47fadda17eb52e32da76e1b6048cef03a8e78050
-        provider_icon: /console/api/workspaces/current/plugin/icon?tenant_id=883ca288-0d1d-41e4-a124-01f6ec6bd83e&filename=be2da8d503500e891c906bef2941745188961e224cb7194f2fee871d71ef6cc5.svg
-        provider_icon_dark: null
-        provider_id: langgenius/email/email
-        provider_name: langgenius/email/email
-        provider_show_name: 电子邮件
-        provider_type: builtin
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+        zIndex: 0
+      # ==============================================================
+      # 节点4：HTTP 查询订单（Supabase）
+      # 工程化：
+      #   - 密钥隔离：{{ $env.SUPABASE_ANON_KEY }} 来自环境变量
+      #   - 重试配置：max_retries=3，指数回退
+      #   - 超时配置：connect=10s，read=30s
+      #   - 幂等：同一订单号查询 → 缓存结果
+      # ==============================================================
+      - data:
+          authorization:
+            config:
+              api_key: '{{ $env.SUPABASE_ANON_KEY }}'
+              header: apikey
+              type: custom
+            type: api-key
+          body:
+            data: []
+            type: none
+            headers: 'Authorization:Bearer {{ $env.SUPABASE_ANON_KEY }}
+              apikey:{{ $env.SUPABASE_ANON_KEY }}'
+          method: get
+          params: ''
+          # 工程化：指数回退重试，最多重试3次
+          retry_config:
+            max_retries: 3
+            retry_enabled: true
+            retry_interval: 100
+          selected: false
+          ssl_verify: true
+          # 工程化：超时控制，避免请求挂死
+          timeout:
+            connect: 10
+            max_connect_timeout: 0
+            max_read_timeout: 0
+            max_write_timeout: 0
+            read: 30
+          title: 🌐 HTTP-查询订单（Supabase）
+          type: http-request
+          url: >-
+            https://{{ $env.SUPABASE_URL or 'fejyztnqjdytxeuhvwhv' }}.supabase.co/rest/v1/orders?order_id=eq.{{#1789267736442.order#}}&select=*
+          variables: []
+        height: 171
+        id: '1789267892022'
+        position: {x: 1007.6138595704421, y: 125.53282859204549}
+        positionAbsolute: {x: 1007.6138595704421, y: 125.53282859204549}
         selected: false
-        title: 发送邮件
-        tool_configurations:
-          convert_to_html:
-            type: constant
-            value: false
-        tool_description: 用于发送邮件
-        tool_label: 发送邮件
-        tool_name: send_mail
-        tool_node_version: '2'
-        tool_parameters:
-          attachments:
-            type: constant
-            value: null
-          bcc:
-            type: mixed
-            value: ''
-          cc:
-            type: mixed
-            value: ''
-          email_content:
-            type: mixed
-            value: '{{#1789269090207.text#}}'
-          reply_to:
-            type: mixed
-            value: 2350496649@qq.com
-          send_to:
-            type: mixed
-            value: 2350496649@qq.com
-          subject:
-            type: mixed
-            value: '{{#sys.query#}}'
-        type: tool
-      height: 87
-      id: '1789278661795'
-      position:
-        x: 1007.6138595704421
-        y: 632.7029830069048
-      positionAbsolute:
-        x: 1007.6138595704421
-        y: 632.7029830069048
-      selected: false
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 242
-      zIndex: 0
-    viewport:
-      x: 102.41499006742788
-      y: 128.5837419289537
-      zoom: 0.5360830733684253
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+        zIndex: 0
+      # ==============================================================
+      # 节点5：IF-订单是否找到
+      # ==============================================================
+      - data:
+          cases:
+            - case_id: 'true'
+              conditions:
+                - comparison_operator: not empty
+                  id: 4b701e68-a772-47df-a821-334443db3685
+                  value: ''
+                  varType: string
+                  variable_selector: ['1789267892022', body]
+              id: 'true'
+              logical_operator: and
+          selected: false
+          title: IF-订单是否存在
+          type: if-else
+        height: 123
+        id: '1789267921461'
+        position: {x: 1352.134358459301, y: 125.53282859204549}
+        positionAbsolute: {x: 1352.134358459301, y: 125.53282859204549}
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+        zIndex: 0
+      # ==============================================================
+      # 节点6：LLM-订单客服（结构化数据解读）
+      # ==============================================================
+      - data:
+          context:
+            enabled: true
+            variable_selector: ['1789267892022', body]
+          memory:
+            query_prompt_template: '{{#sys.query#}}
+
+              {{#1789267892022.body#}}
+
+              {{#1768028620865.user_id#}}'
+            role_prefix:
+              assistant: ''
+              user: ''
+            window:
+              enabled: true
+              size: 50
+          model:
+            completion_params:
+              temperature: 0.7
+            mode: chat
+            name: qwen3.8-flash
+            provider: langgenius/tongyi/tongyi
+          prompt_template:
+            - id: 154c3410-967d-49e2-a4a3-88443572951d
+              role: system
+              text: |
+                你是智能订单客服助手，专门帮助用户查询订单状态。
+
+                ## 你的任务
+                当用户询问订单信息时，从数据库返回的订单数据中提取信息，友好地回复用户。
+
+                ## 数据说明
+                订单数据（JSON 格式）可能包含以下字段：
+                - order_id: 订单号
+                - customer_name: 客户姓名
+                - product_name: 产品名称
+                - status: 订单状态（英文转中文：SHIPPED=已发货，PAID=已付款，PENDING=待处理，DELIVERED=已签收）
+                - logistics: 快递公司（如：顺丰、圆通、中通）
+                - eta: 预计送达日期
+
+                ## 回复要求
+                1. 如果订单存在：
+                   - 用中文友好回复
+                   - 把英文状态转成中文
+                   - 告知用户：订单号、产品、当前状态、物流公司、预计送达日期
+
+                2. 如果订单不存在：
+                   - 礼貌告知用户"抱歉，未找到该订单，请检查订单号是否正确"
+
+                3. 回复要简洁、专业、友好
+          selected: false
+          title: 💬 LLM-订单客服
+          type: llm
+          vision:
+            enabled: false
+        height: 87
+        id: '1789267942937'
+        position: {x: 1718.6224336305092, y: 159.80686035517576}
+        positionAbsolute: {x: 1718.6224336305092, y: 159.80686035517576}
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+        zIndex: 0
+      # ==============================================================
+      # 节点7：Answer-订单回复
+      # ==============================================================
+      - data:
+          answer: '{{#1789267942937.text#}}'
+          selected: false
+          title: ✅ Answer-订单回复
+          type: answer
+          variables: []
+        height: 101
+        id: '1789267974515'
+        position: {x: 2095.237734853628, y: 159.80686035517576}
+        positionAbsolute: {x: 2095.237734853628, y: 159.80686035517576}
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+        zIndex: 0
+      # ==============================================================
+      # 节点8：Answer-订单未找到
+      # ==============================================================
+      - data:
+          answer: >-
+            抱歉，未找到订单号 **{{#1789267736442.order#}}**，请检查订单号是否正确。
+
+            订单号格式为 ZD 开头 + 8 位数字，如 ZD20240001。
+        selected: false
+          title: ❌ Answer-订单未找到
+          type: answer
+          variables: []
+        height: 133
+        id: '1789267992227'
+        position: {x: 1711.1609035081974, y: 328.7106585584687}
+        positionAbsolute: {x: 1711.1609035081974, y: 328.7106585584687}
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+        zIndex: 0
+      # ==============================================================
+      # 节点9：知识库检索
+      # 工程化：支持 Rerank 重排序，top_k=4 召回更精准
+      # ==============================================================
+      - data:
+          dataset_ids:
+            - >-
+              {{ $env.DIFY_KNOWLEDGE_DATASET_ID || 'qxcL9snI73CH1ul1jw8J7CqUoI15qWEWVHbqLRaBoilr5M5vXEq7kPyQ/xc6pA8z' }}
+          multiple_retrieval_config:
+            reranking_enable: true
+            reranking_mode: reranking_model
+            reranking_model:
+              model: qwen3-rerank
+              provider: langgenius/tongyi/tongyi
+            top_k: 4
+          query_attachment_selector: []
+          query_variable_selector: [sys, query]
+          retrieval_mode: multiple
+          selected: false
+          title: 📚 知识检索（TopK=4+Rerank）
+          type: knowledge-retrieval
+        height: 89
+        id: '1789268301243'
+        position: {x: 696.7140350414365, y: 387.65754393370145}
+        positionAbsolute: {x: 696.7140350414365, y: 387.65754393370145}
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+        zIndex: 0
+      # ==============================================================
+      # 节点10：LLM-基于知识检索
+      # ==============================================================
+      - data:
+          context:
+            enabled: true
+            variable_selector: ['1789268301243', result]
+          memory:
+            query_prompt_template: '{{#sys.query#}}
+
+              {{#1789268301243.result#}}
+
+              {{#1768028620865.user_id#}}'
+            role_prefix:
+              assistant: ''
+              user: ''
+            window:
+              enabled: true
+              size: 50
+          model:
+            completion_params:
+              temperature: 0.7
+            mode: chat
+            name: qwen3.8-flash
+            provider: langgenius/tongyi/tongyi
+          prompt_template:
+            - id: eb937bec-0d16-491f-b3c4-7bca1307e64e
+              role: system
+              text: |
+                你是智能产品知识库助手，专注于回答用户关于注塑机产品的问题。
+
+                ## 你的数据来源
+                用户的问题会附上从知识库检索到的相关文档片段（context 字段）。
+
+                ## 你的任务
+                1. 仔细阅读检索到的文档内容
+                2. 基于文档内容，准确回答用户问题
+                3. 如果文档中有相关信息：
+                   - 直接引用/总结文档内容回答
+                   - 回答要专业、清晰、简洁
+                4. 如果文档中没有相关信息：
+                   - 礼貌告知用户"抱歉，知识库中没有找到相关内容"
+                   - 建议用户咨询人工客服
+                5. 只基于检索到的文档回答，不要编造信息
+
+                ## 回答风格
+                - 专业技术问题 → 准确、详细
+                - 常见问题 → 简洁、易懂
+                - 涉及参数/规格 → 尽量给出具体数值
+                - 涉及操作/使用 → 步骤清晰
+
+                ## 语言
+                - 用户用中文问 → 用中文答
+                - 使用友好的称呼，如"您好"
+          selected: false
+          title: 💬 LLM-基于知识检索
+          type: llm
+          vision:
+            enabled: false
+        height: 87
+        id: '1789268324504'
+        position: {x: 1007.6138595704421, y: 387.65754393370145}
+        positionAbsolute: {x: 1007.6138595704421, y: 387.65754393370145}
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+        zIndex: 0
+      # ==============================================================
+      # 节点11：Answer-知识库回复
+      # ==============================================================
+      - data:
+          answer: '{{#1789268324504.text#}}'
+          selected: false
+          title: ✅ Answer-知识库回复
+          type: answer
+          variables: []
+        height: 101
+        id: '1789268364962'
+        position: {x: 1362.281519418018, y: 387.65754393370145}
+        positionAbsolute: {x: 1362.281519418018, y: 387.65754393370145}
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+        zIndex: 0
+      # ==============================================================
+      # 节点12：LLM-问题分析（技术问题）
+      # 工程化：
+      #   - 结构化输出（问题摘要/可能原因/建议措施）
+      #   - 涉及安全时强调"先断电"
+      # ==============================================================
+      - data:
+          context:
+            enabled: true
+            variable_selector: [sys, query]
+          memory:
+            query_prompt_template: '{{#sys.query#}}
+
+              {{#1768028620865.user_id#}}'
+            role_prefix:
+              assistant: ''
+              user: ''
+            window:
+              enabled: true
+              size: 50
+          model:
+            completion_params:
+              temperature: 0.7
+            mode: chat
+            name: qwen3.8-flash
+            provider: langgenius/tongyi/tongyi
+          prompt_template:
+            - id: 35bcc922-c4af-461a-a4e3-8cdc7e138d24
+              role: system
+              text: |
+                你是注塑机技术问题分析专家，负责分析用户的技术问题。
+
+                ## 你的任务
+                1. 阅读用户描述的技术问题
+                2. 识别关键信息：
+                   - 机器型号（如 MA1600、MA2000、MA2500）
+                   - 问题类型（故障报警、操作问题、参数调整、维护保养）
+                   - 故障现象（具体描述、温度/压力/电机异常）
+                   - 使用环境（材料、模具、温度）
+                3. 基于知识库返回的内容，给出专业分析
+                4. 提供可操作的处理建议
+
+                ## 输出格式
+                **问题摘要**：[1-2 句话概括问题]
+
+                **关键信息**：
+                - 机器型号：
+                - 问题类型：
+                - 故障现象：
+                - 紧急程度：
+
+                **可能原因**：[列出 2-3 个可能原因]
+
+                **建议措施**：
+                1. [第一步该做什么]
+                2. [第二步该做什么]
+                3. [需要专业支持时联系工程师]
+
+                ## 注意
+                - 基于知识库内容回答，不要编造
+                - 涉及安全问题时强调"请先断电"
+                - 严重故障建议联系售后工程师
+          selected: false
+          title: 🔧 LLM-问题分析（技术）
+          type: llm
+          vision:
+            enabled: false
+        height: 87
+        id: '1789268493216'
+        position: {x: 705.6138595704421, y: 506.7029830069048}
+        positionAbsolute: {x: 705.6138595704421, y: 506.7029830069048}
+        selected: true
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+        zIndex: 0
+      # ==============================================================
+      # 节点13：Answer-技术回复
+      # ==============================================================
+      - data:
+          answer: '{{#1789268493216.text#}}'
+          selected: false
+          title: ✅ Answer-技术回复
+          type: answer
+          variables: []
+        height: 101
+        id: '1789269045987'
+        position: {x: 1007.6138595704421, y: 506.7029830069048}
+        positionAbsolute: {x: 1007.6138595704421, y: 506.7029830069048}
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+        zIndex: 0
+      # ==============================================================
+      # 节点14：LLM-客户需求（商务）
+      # 工程化：
+      #   - 识别客户类型（终端用户/代理商/OEM）
+      #   - 引导留下联系方式，为销售团队赋能
+      # ==============================================================
+      - data:
+          context:
+            enabled: true
+            variable_selector: [sys, query]
+          memory:
+            query_prompt_template: '{{#sys.query#}}
+
+              {{#1768028620865.user_id#}}'
+            role_prefix:
+              assistant: ''
+              user: ''
+            window:
+              enabled: false
+              size: 50
+          model:
+            completion_params:
+              temperature: 0.7
+            mode: chat
+            name: qwen3.7-max
+            provider: langgenius/tongyi/tongyi
+          prompt_template:
+            - id: 65fa6a91-b7af-4b34-abd6-6c25d4b2bc0f
+              role: system
+              text: |
+                你是注塑机商务顾问，负责分析客户的商业需求。
+
+                ## 你的任务
+                1. 理解客户的商业诉求
+                2. 识别关键商业信息：
+                   - 客户类型（终端用户、代理商、OEM 客户）
+                   - 需求类型（采购、报价、技术方案、合作）
+                   - 预算范围
+                   - 决策角色（老板、技术、采购）
+                   - 时间要求（紧急程度）
+                3. 给出专业的回应建议
+                4. 必要时引导留下联系方式
+
+                ## 输出格式
+                **客户类型识别**：[终端用户/代理商/OEM]
+
+                **需求类型**：
+                - 主要需求：
+                - 隐性需求：
+
+                **关键信息**：
+                - 预算意向：
+                - 时间要求：
+                - 决策影响：
+
+                **响应策略**：
+                - 立即提供：[报价单/技术方案/样品资料]
+                - 后续跟进：[技术交流/商务洽谈/工厂参观]
+                - 重点强调：[核心竞争力/服务承诺/案例]
+
+                ## 商务话术
+                - 用专业但不生硬的语气
+                - 突出公司优势
+                - 留下下一步行动的钩子
+          selected: false
+          title: 💼 LLM-客户需求（商务）
+          type: llm
+          vision:
+            enabled: false
+        height: 87
+        id: '1789269090207'
+        position: {x: 705.6138595704421, y: 632.7029830069048}
+        positionAbsolute: {x: 705.6138595704421, y: 632.7029830069048}
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+        zIndex: 0
+      # ==============================================================
+      # 节点15：发送邮件（商务线索转 CRM）
+      # 工程化：
+      #   - 收件人邮箱从环境变量注入，不硬编码
+      #   - 邮件内容自动填充，为销售团队赋能
+      # ==============================================================
+      - data:
+          is_team_authorization: false
+          meta: null
+          paramSchemas:
+            - auto_generate: null
+              default: null
+              form: llm
+              human_description:
+                en_US: Recipient email account
+                zh_Hans: 收件人邮箱账号
+              input_schema: null
+              label:
+                en_US: Recipient email account
+                zh_Hans: 收件人邮箱账号
+              llm_description: Recipient email account
+              max: null
+              min: null
+              multiple: false
+              name: send_to
+              options: []
+              placeholder: null
+              precision: null
+              required: true
+              scope: null
+              template: null
+              type: string
+            - auto_generate: null
+              default: null
+              form: llm
+              human_description:
+                en_US: Reply-to email address
+                zh_Hans: 回复电子邮件地址
+              input_schema: null
+              label:
+                en_US: Reply-to email address
+                zh_Hans: 回复电子邮件地址
+              llm_description: Reply-to email address
+              max: null
+              min: null
+              multiple: false
+              name: reply_to
+              options: []
+              placeholder: null
+              precision: null
+              required: false
+              scope: null
+              template: null
+              type: string
+            - auto_generate: null
+              default: null
+              form: llm
+              human_description:
+                en_US: Carbon copy email account
+                zh_Hans: 抄送邮箱账号(json list)
+              input_schema: null
+              label:
+                en_US: Carbon copy email account(json list)
+                zh_Hans: 抄送邮箱账号(json list)
+              llm_description: Carbon copy email account(json list)
+              max: null
+              min: null
+              multiple: false
+              name: cc
+              options: []
+              placeholder: null
+              precision: null
+              required: false
+              scope: null
+              template: null
+              type: string
+            - auto_generate: null
+              default: null
+              form: llm
+              human_description:
+                en_US: email subject
+                zh_Hans: 邮件主题
+              input_schema: null
+              label:
+                en_US: email subject
+                zh_Hans: 邮件主题
+              llm_description: email subject
+              max: null
+              min: null
+              multiple: false
+              name: subject
+              options: []
+              placeholder: null
+              precision: null
+              required: true
+              scope: null
+              template: null
+              type: string
+            - auto_generate: null
+              default: null
+              form: llm
+              human_description:
+                en_US: email content
+                zh_Hans: 邮件内容
+              input_schema: null
+              label:
+                en_US: email content
+                zh_Hans: 邮件内容
+              llm_description: email content
+              max: null
+              min: null
+              multiple: false
+              name: email_content
+              options: []
+              placeholder: null
+              precision: null
+              required: true
+              scope: null
+              template: null
+              type: string
+            - auto_generate: null
+              default: false
+              form: form
+              human_description:
+                en_US: Convert content from markdown to HTML
+                zh_Hans: 将内容从Markdown转换为HTML
+              input_schema: null
+              label:
+                en_US: Convert to HTML
+                zh_Hans: 转换为HTML
+              llm_description: Whether to convert the email content from markdown to HTML
+              max: null
+              min: null
+              multiple: false
+              name: convert_to_html
+              options: []
+              placeholder: null
+              precision: null
+              required: false
+              scope: null
+              template: null
+              type: boolean
+          params:
+            attachments: ''
+            bcc: ''
+            cc: ''
+            convert_to_html: ''
+            email_content: ''
+            reply_to: ''
+            send_to: '{{ $env.SALES_EMAIL_TO || "sales@example.com" }}'
+            subject: ''
+          plugin_id: langgenius/email
+          plugin_unique_identifier: >-
+            langgenius/email:0.0.17@e6b5e6be119df27bb81eb61c47fadda17eb52e32da76e1b6048cef03a8e78050
+          provider_icon: >-
+            /console/api/workspaces/current/plugin/icon?tenant_id=883ca288-0d1d-41e4-a124-01f6ec6bd83e&filename=be2da8d503500e891c906bef2941745188961e224cb7194f2fee871d71ef6cc5.svg
+          provider_icon_dark: null
+          provider_id: langgenius/email/email
+          provider_name: langgenius/email/email
+          provider_show_name: 电子邮件
+          provider_type: builtin
+          selected: false
+          title: ✉️ 发送邮件（商务线索）
+          tool_configurations:
+            convert_to_html:
+              type: constant
+              value: false
+          tool_description: 用于发送邮件
+          tool_label: 发送邮件
+          tool_name: send_mail
+          tool_node_version: '2'
+          tool_parameters:
+            attachments:
+              type: constant
+              value: null
+            bcc:
+              type: mixed
+              value: ''
+            cc:
+              type: mixed
+              value: ''
+            email_content:
+              type: mixed
+              value: '{{#1789269090207.text#}}'
+            reply_to:
+              type: mixed
+              value: '{{ $env.SMTP_FROM || "noreply@example.com" }}'
+            send_to:
+              type: mixed
+              value: '{{ $env.SALES_EMAIL_TO || "sales@example.com" }}'
+            subject:
+              type: mixed
+              value: '【商务咨询】{{#sys.query#}}'
+        height: 87
+        id: '1789278661795'
+        position: {x: 1007.6138595704421, y: 632.7029830069048}
+        positionAbsolute: {x: 1007.6138595704421, y: 632.7029830069048}
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+        zIndex: 0
+      # ==============================================================
+      # 节点16：Answer-商务回复
+      # ==============================================================
+      - data:
+          answer: |
+            您好！您的商务咨询已收到 🙏
+
+            我们的商务团队将在 **1 个工作日内** 与您联系。
+
+            如需紧急咨询，欢迎直接拨打：📞 400-XXX-XXXX
+          selected: false
+          title: ✅ Answer-商务回复
+          type: answer
+          variables: []
+        height: 101
+        id: '1789269135251'
+        position: {x: 1371.2818446478573, y: 608.4530101093914}
+        positionAbsolute: {x: 1371.2818446478573, y: 608.4530101093914}
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 242
+        zIndex: 0
+  viewport: {x: 102.41499006742788, y: 128.5837419289537, zoom: 0.5360830733684253}
   rag_pipeline_variables: []

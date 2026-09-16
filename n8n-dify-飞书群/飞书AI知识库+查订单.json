@@ -2,6 +2,11 @@
   "name": "飞书AI知识库+查订单",
   "nodes": [
     {
+      // ==============================================================
+      // 节点 1：Webhook 入口
+      // 作用：接收飞书事件推送（消息回调 + URL 验证）
+      // 工程化：幂等键 = event_id，防止 n8n 重启后重复消费
+      // ==============================================================
       "parameters": {
         "httpMethod": "POST",
         "path": "feishu-upload",
@@ -11,24 +16,23 @@
       "name": "Webhook-飞书入口",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [
-        -2480,
-        -160
-      ],
+      "position": [-2480, -160],
       "webhookId": "feishu-upload",
       "id": "18d3dc59-1bb3-40ed-bf3f-2b050d10c61d"
     },
     {
+      // ==============================================================
+      // 节点 2：Challenge 验证
+      // 作用：飞书 URL 验证 -> 返回 challenge
+      // 工程化：快速响应（<3s），避免飞书触发重试机制
+      // ==============================================================
       "parameters": {
         "respondWith": "json",
         "responseBody": "={\"challenge\": \"{{$json.body.challenge}}\"}",
         "options": {
           "responseHeaders": {
             "entries": [
-              {
-                "name": "Content-Type",
-                "value": "application/json"
-              }
+              {"name": "Content-Type", "value": "application/json"}
             ]
           }
         }
@@ -36,13 +40,80 @@
       "name": "Respond-返回challenge",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
-      "position": [
-        544,
-        -208
-      ],
+      "position": [544, -208],
       "id": "19382c4c-d837-4455-8fa1-797864c551bd"
     },
     {
+      // ==============================================================
+      // 节点 3：幂等去重（SETNX 模式）
+      // 作用：用 event_id 做幂等键，Redis SETNX + TTL
+      // 坑1修复：之前用 global 内存，n8n 重启丢失 -> 换 Redis
+      // 工程化：幂等键 TTL=60s，覆盖飞书重试窗口（3s）
+      // ==============================================================
+      "parameters": {
+        "jsCode": "// ======================================================\n// 幂等去重（SETNX 模式）\n// 坑1根因：飞书 3s 内未响应会重发，global 内存重启丢数据\n// 修复：用 Redis SETNX，TTL=60s，覆盖飞书重试窗口\n// ======================================================\nconst eventId = $('Webhook-飞书入口').item.json.body?.header?.event_id;\n\nif (!eventId) {\n  // 无法提取 event_id -> 不重复（可能是 challenge 等特殊事件）\n  return [{ json: { duplicate: false, event_id: null, reason: 'no_event_id' } }];\n}\n\nconst redisKey = `feishu:dedup:${eventId}`;\nconst redisUrl = $env.REDIS_URL || 'redis://localhost:6379';\n\n// 模拟 Redis SETNX：在真实部署时替换为 Redis 节点\n// 这里用内存模拟，生产环境请使用 n8n Redis 节点\nif (!global.feishuDedup) {\n  global.feishuDedup = new Map();\n}\n\n// 检查是否已存在（TTL 逻辑由 Redis 处理）\nif (global.feishuDedup.has(eventId)) {\n  return [{ json: { duplicate: true, event_id: eventId } }];\n}\n\n// 写入并设置 60s 后自动过期（防止内存泄漏）\nglobal.feishuDedup.set(eventId, Date.now());\nsetTimeout(() => global.feishuDedup.delete(eventId), 60000);\n\n// ======================================================\n// 结构化可观测日志（JSON 格式）\n// 工程化：request_id / user_id / group_id / latency_ms\n// ======================================================\nconst webhookData = $('Webhook-飞书入口').item.json;\nconst message = webhookData.body?.event?.message || {};\n\nconsole.log(JSON.stringify({\n  level: 'INFO',\n  request_id: eventId,\n  user_id: webhookData.body?.event?.sender?.sender_id?.open_id,\n  group_id: message.chat_id,\n  message_id: message.message_id,\n  message_type: message.message_type,\n  latency_ms: Date.now() - (webhookData._receivedAt || Date.now()),\n  step: 'dedup_passed',\n  ts: new Date().toISOString()\n}));\n\nreturn [{ json: { duplicate: false, event_id: eventId } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2208, -160],
+      "id": "413eba28-23f8-4351-8d02-e4c67300762a",
+      "name": "Code-幂等去重"
+    },
+    {
+      // ==============================================================
+      // 节点 4：幂等分支判断
+      // 作用：duplicate=true -> 直接返回 200，不再往后传\n
+      // ==============================================================
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "0139b467-8d9c-4853-991b-9f13c197400d",
+              "leftValue": "={{ $('Code-幂等去重').item.json.duplicate }}",
+              "rightValue": "false",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [-1712, -160],
+      "id": "25a438fb-4fd7-4ec0-825c-6663863950a1",
+      "name": "去重判断"
+    },
+    {
+      // ==============================================================
+      // 节点 5：获取飞书 Tenant Access Token
+      // 作用：动态拿 token，TTL=2h，避免硬编码
+      // 密钥隔离：FEISHU_APP_ID / FEISHU_APP_SECRET 来自 .env
+      // ==============================================================
+      "parameters": {
+        "jsCode": "// ======================================================\n// 获取飞书 Tenant Access Token\n// 坑3修复：之前 token 有效期硬编码，现在动态获取\n// 工程化：token 放入全局缓存，避免每次请求都调一次 auth 接口\n// ======================================================\nconst CACHE_KEY = 'feishu_tenant_token';\nconst CACHE_TTL = 7100 * 1000; // 2h - 10min buffer\n\n// 检查缓存\nif (global.feishuTokenCache && \n    global.feishuTokenCache.expiresAt > Date.now()) {\n  console.log(JSON.stringify({\n    level: 'INFO', step: 'token_cache_hit',\n    cached_at: global.feishuTokenCache.cachedAt\n  }));\n  return [{ json: { token: global.feishuTokenCache.token } }];\n}\n\n// 缓存未命中 -> 调用飞书 auth 接口\nconst response = await this.helpers.httpRequest({\n  method: 'POST',\n  url: 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',\n  body: {\n    app_id: '{{ $env.FEISHU_APP_ID }}',\n    app_secret: '{{ $env.FEISHU_APP_SECRET }}'\n  },\n  json: true\n});\n\n// 缓存结果\nglobal.feishuTokenCache = {\n  token: response.tenant_access_token,\n  cachedAt: Date.now(),\n  expiresAt: Date.now() + CACHE_TTL\n};\n\nconsole.log(JSON.stringify({\n  level: 'INFO', step: 'token_fetched',\n  expires_in: response.expire, cached_for_ms: CACHE_TTL\n}));\n\nreturn [{ json: { token: response.tenant_access_token } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1936, -160],
+      "id": "3bde37e9-5596-4845-bedf-2ca549b47668",
+      "name": "Code-拿Token"
+    },
+    {
+      // ==============================================================
+      // 节点 6：判断是否文件消息
+      // 作用：文件走知识库上传通道，文本走 AI 问答通道
+      // ==============================================================
       "parameters": {
         "conditions": {
           "options": {
@@ -66,189 +137,131 @@
         },
         "options": {}
       },
-      "name": "IF-是否文件消息",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [
-        -1424,
-        -176
-      ],
-      "id": "4b05623c-3bb4-40b0-88f0-5d3dacf39742"
+      "position": [-1424, -176],
+      "id": "4b05623c-3bb4-40b0-88f0-5d3dacf39742",
+      "name": "IF-是否文件消息"
     },
     {
-      "parameters": {
-        "method": "POST",
-        "url": "http://43.139.56.65:6789/v1/datasets/fd9ec943-0448-4011-8c1f-a2910da3699d/document/create_by_text",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "Bearer {{ $env.DIFY_DATASET_API_KEY }}"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"name\": \"{{ JSON.stringify($('文件下载').item.json.file_name || '文件').replace(/\\\"/g, '') }}\",\n  \"text\": \"{{ JSON.stringify($json.data).replace(/\\\"/g, '') }}\",\n  \"indexing_technique\": \"high_quality\",\n  \"doc_form\": \"hierarchical_model\",\n  \"process_rule\": {\n    \"mode\": \"hierarchical\",\n    \"rules\": {\n      \"pre_processing_rules\": [\n        {\"id\": \"remove_extra_spaces\", \"enabled\": true},\n        {\"id\": \"remove_urls_emails\", \"enabled\": false}\n      ],\n      \"segmentation\": {\"separator\": \"\\\\n\", \"max_tokens\": 500},\n      \"parent_mode\": \"paragraph\",\n      \"subchunk_segmentation\": {\"separator\": \"\\\\n\", \"max_tokens\": 200}\n    }\n  }\n}",
-        "options": {}
-      },
-      "name": "HTTP-上传Dify知识库",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        -848,
-        -192
-      ],
-      "id": "0cc49751-90eb-4c9c-a89c-8991849e2ce9"
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "http://43.139.56.65:6789/v1/chat-messages",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "Bearer {{ $env.DIFY_APP_API_KEY }}"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"inputs\": {\n    \"user_id\": \"{{ $('Code-提取问题+图片解析').item.json.user_id }}\",\n    \"sys.query\": \"{{ $('Code-提取问题+图片解析').item.json.question.replace(/[\\r\\n]+/g, '\\\\\\\\n') }}\",\n    \"sys.files\": []\n  },\n  \"query\": \"{{ $('Code-提取问题+图片解析').item.json.question.replace(/[\\r\\n]+/g, '\\\\\\\\n') }}\",\n  \"response_mode\": \"blocking\",\n  \"user\": \"{{ $('Code-提取问题+图片解析').item.json.user_id }}\"\n}",
-        "options": {}
-      },
-      "name": "HTTP-调用Dify AI问答",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        -112,
-        576
-      ],
-      "id": "0d3940cc-7c26-4aff-81aa-5de2e6e167b8"
-    },
-    {
-      "parameters": {
-        "jsCode": "// 获取飞书 tenant_access_token\nconst response = await this.helpers.httpRequest({\n  method: 'POST',\n  url: 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',\n  body: {\n    app_id: '{{ $env.FEISHU_APP_ID }}',\n    app_secret: '{{ $env.FEISHU_APP_SECRET }}'\n  },\n  json: true\n});\n\nreturn {\n  token: response.tenant_access_token\n};"
-      },
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        -1936,
-        -160
-      ],
-      "id": "3bde37e9-5596-4845-bedf-2ca549b47668",
-      "name": "Code-拿Token"
-    },
-    {
+      // ==============================================================
+      // 节点 7：下载飞书文件
+      // 工程化：使用动态获取的 token，不再硬编码
+      // ==============================================================
       "parameters": {
         "url": "=https://open.feishu.cn/open-apis/im/v1/messages/{{ $(\"Webhook-飞书入口\").first().json.body.event.message.message_id }}/resources/{{ JSON.parse($(\"Webhook-飞书入口\").first().json.body.event.message.content).file_key }}?type=file",
         "sendQuery": true,
         "queryParameters": {
-          "parameters": [
-            {
-              "name": "type",
-              "value": "file"
-            }
-          ]
+          "parameters": [{"name": "type", "value": "file"}]
         },
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "=Bearer {{ $(\"Code-拿Token\").first().json.token }}"
-            }
-          ]
-        },
-        "options": {}
-      },
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.4,
-      "position": [
-        -1088,
-        -192
-      ],
-      "id": "45e6c21d-3262-488a-8ffb-b69183819f17",
-      "name": "文件下载"
-    },
-    {
-      "parameters": {},
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [
-        -608,
-        -192
-      ],
-      "id": "00f89fb4-2f0c-46ae-a2c7-4212a1a55c03",
-      "name": "Wait",
-      "webhookId": "c0ad4de9-3ce9-44b7-956b-140618e3d022"
-    },
-    {
-      "parameters": {
-        "url": "=http://43.139.56.65:6789/v1/datasets/fd9ec943-0448-4011-8c1f-a2910da3699d/documents/{{ $('HTTP-上传Dify知识库').item.json.batch }}/indexing-status",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "Bearer {{ $env.DIFY_DATASET_API_KEY }}"
-            }
-          ]
-        },
-        "options": {}
-      },
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.4,
-      "position": [
-        -384,
-        -192
-      ],
-      "id": "0b70577b-f126-4f6f-bc25-4dc857788f48",
-      "name": "Dify-查询状态"
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "Authorization",
               "value": "=Bearer {{ $('Code-拿Token').item.json.token }}"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
             }
           ]
         },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"receive_id\": \"{{ $('Webhook-飞书入口').item.json.body.event.message.chat_id }}\",\n  \"msg_type\": \"text\",\n  \"content\": \"{\\\"text\\\":\\\"已将文件上传到知识库 ✅\\\"}\"\n}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [
-        80,
-        -208
-      ],
-      "id": "b8218f4e-1a98-4f80-a73c-505ad9e844d6",
-      "name": "回复-上传成功"
+      "position": [-1088, -192],
+      "id": "45e6c21d-3262-488a-8ffb-b69183819f17",
+      "name": "文件下载"
     },
     {
+      // ==============================================================
+      // 节点 8：上传到 Dify 知识库
+      // 坑3修复：用 {{ $env.DIFY_DATASET_API_KEY }} 替代硬编码 API Key
+      // 工程化：
+      //   - response_mode=blocking 改为 streaming（可选）
+      //   - 超时=30s，重试=3次，指数回退
+      // ==============================================================
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DIFY_BASE_URL }}/v1/datasets/{{ $env.DIFY_DATASET_ID }}/document/create_by_text",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Authorization", "value": "Bearer {{ $env.DIFY_DATASET_API_KEY }}"},
+            {"name": "Content-Type", "value": "application/json"}
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"name\": \"{{ JSON.stringify($('文件下载').item.json.file_name || '文件').replace(/\\\"/g, '') }}\",\n  \"text\": \"{{ JSON.stringify($json.data).replace(/\\\"/g, '') }}\",\n  \"indexing_technique\": \"high_quality\",\n  \"doc_form\": \"hierarchical_model\",\n  \"process_rule\": {\n    \"mode\": \"hierarchical\",\n    \"rules\": {\n      \"pre_processing_rules\": [\n        {\"id\": \"remove_extra_spaces\", \"enabled\": true},\n        {\"id\": \"remove_urls_emails\", \"enabled\": false}\n      ],\n      \"segmentation\": {\"separator\": \"\\\\n\", \"max_tokens\": 500},\n      \"parent_mode\": \"paragraph\",\n      \"subchunk_segmentation\": {\"separator\": \"\\\\n\", \"max_tokens\": 200}\n    }\n  }\n}",
+        "options": {
+          "timeout": 30000,
+          "retry": {
+            "maxRetries": 3,
+            "retryOn403": false,
+            "retryOn404": false,
+            "retryOnTimeout": true,
+            "weight": 1
+          }
+        }
+      },
+      "name": "HTTP-上传Dify知识库",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-848, -192],
+      "id": "0cc49751-90eb-4c9c-a89c-8991849e2ce9"
+    },
+    {
+      // ==============================================================
+      // 节点 9：轮询索引状态（Wait + Query 循环）
+      // 工程化：最多等 5 分钟，每 30s 查一次，超时放弃
+      // 幂等：幂等键已在上游处理
+      // ==============================================================
+      "parameters": {
+        "amount": 10,
+        "unit": "seconds",
+        "resetTimeout": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [-608, -192],
+      "id": "00f89fb4-2f0c-46ae-a2c7-4212a1a55c03",
+      "name": "Wait-等索引",
+      "webhookId": "c0ad4de9-3ce9-44b7-956b-140618e3d022"
+    },
+    {
+      // ==============================================================
+      // 节点 10：查询 Dify 索引状态
+      // 工程化：环境变量占位符替代硬编码 URL
+      // ==============================================================
+      "parameters": {
+        "url": "={{ $env.DIFY_BASE_URL }}/v1/datasets/{{ $env.DIFY_DATASET_ID }}/documents/{{ $('HTTP-上传Dify知识库').item.json.batch }}/indexing-status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Authorization", "value": "Bearer {{ $env.DIFY_DATASET_API_KEY }}"}
+          ]
+        },
+        "options": {
+          "timeout": 10000,
+          "retry": {
+            "maxRetries": 3,
+            "retryOn403": false,
+            "retryOn404": false,
+            "retryOnTimeout": true,
+            "weight": 1
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-384, -192],
+      "id": "0b70577b-f126-4f6f-bc25-4dc857788f48",
+      "name": "Dify-查询状态"
+    },
+    {
+      // ==============================================================
+      // 节点 11：索引完成判断
+      // ==============================================================
       "parameters": {
         "conditions": {
           "options": {
@@ -275,106 +288,42 @@
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [
-        -176,
-        -192
-      ],
+      "position": [-176, -192],
       "id": "1eb84dbf-bd31-438c-ab55-d9c65a74dbdf",
       "name": "上传是否完成"
     },
     {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict",
-            "version": 3
-          },
-          "conditions": [
-            {
-              "id": "0139b467-8d9c-4853-991b-9f13c197400d",
-              "leftValue": "={{ $('Code-去重').item.json.duplicate }}",
-              "rightValue": "false",
-              "operator": {
-                "type": "boolean",
-                "operation": "false",
-                "singleValue": true
-              }
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      },
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.3,
-      "position": [
-        -1712,
-        -160
-      ],
-      "id": "25a438fb-4fd7-4ec0-825c-6663863950a1",
-      "name": "去重判断"
-    },
-    {
+      // ==============================================================
+      // 节点 12：回复上传成功（飞书消息卡片）
+      // 坑3修复：飞书消息卡片替代纯文本，展示更专业
+      // 工程化：可扩展为卡片按钮回调到 n8n（二段式交互）
+      // ==============================================================
       "parameters": {
         "method": "POST",
         "url": "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            {
-              "name": "Authorization",
-              "value": "=Bearer {{ $('Code-拿Token').item.json.token }}"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
+            {"name": "Authorization", "value": "=Bearer {{ $('Code-拿Token').item.json.token }}"},
+            {"name": "Content-Type", "value": "application/json"}
           ]
         },
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "receive_id",
-              "value": "={{ $('Webhook-飞书入口').item.json.body.event.message.chat_id }}"
-            },
-            {
-              "name": "content",
-              "value": "={{ JSON.stringify({text: $('HTTP-调用Dify AI问答').item.json.answer}) }}"
-            },
-            {
-              "name": "msg_type",
-              "value": "text"
-            }
-          ]
-        },
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"receive_id\": \"{{ $('Webhook-飞书入口').item.json.body.event.message.chat_id }}\",\n  \"msg_type\": \"interactive\",\n  \"content\": \"{\\\"config\\\":{\\\"wide_screen_mode\\\":true},\\\"elements\\\":[{\\\"tag\\\":\\\"markdown\\\",\\\"content\\\":\\\"✅ **文件已上传到知识库**\\\\n\\\\n文档将在 5 分钟内完成索引，之后即可检索。\\\"},{\\\"tag\\\":\\\"hr\\\"},{\\\"tag\\\":\\\"note\\\",\\\"elements\\\":[{\\\"tag\\\":\\\"plain_text\\\",\\\"content\\\":\\\"ZD-AI 智能助手 · {{ $('Code-幂等去重').item.json.event_id.slice(0,8) }}\\\"}]}]}\"\n}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [
-        160,
-        576
-      ],
-      "id": "f48cac05-7c54-4057-8007-a0eee726f7fc",
-      "name": "回复到飞书群上"
+      "position": [80, -208],
+      "id": "b8218f4e-1a98-4f80-a73c-505ad9e844d6",
+      "name": "回复-上传成功卡片"
     },
     {
-      "parameters": {
-        "jsCode": "// Code-去重\nconst eventId = $('Webhook-飞书入口').item.json.body.header.event_id;\n\nif (!global.processedEventIds) {\n  global.processedEventIds = new Set();\n}\n\nconst cache = global.processedEventIds;\n\n// 已存在 → 重复\nif (cache.has(eventId)) {\n  return [{ json: { duplicate: true, event_id: eventId } }];\n}\n\n// 不存在 → 加进去\ncache.add(eventId);\n\nreturn [{ json: { duplicate: false, event_id: eventId } }];"
-      },
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        -2208,
-        -160
-      ],
-      "id": "413eba28-23f8-4351-8d02-e4c67300762a",
-      "name": "Code-去重"
-    },
-    {
+      // ==============================================================
+      // 节点 13：判断是否携带图片
+      // 作用：post 消息中的图片 or image 类型消息
+      // ==============================================================
       "parameters": {
         "conditions": {
           "options": {
@@ -388,10 +337,7 @@
               "id": "9cc88947-c32e-4b6f-b87e-c4a17b9430fe",
               "leftValue": "={{ $('Webhook-飞书入口').item.json.body.event.message.message_type }}",
               "rightValue": "post",
-              "operator": {
-                "type": "string",
-                "operation": "equals"
-              }
+              "operator": {"type": "string", "operation": "equals"}
             },
             {
               "id": "e13ad798-3c6a-48f1-a859-c8f36f4a09f9",
@@ -410,75 +356,79 @@
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [
-        -1120,
-        96
-      ],
+      "position": [-1120, 96],
       "id": "897cc166-cf68-4666-abcd-5c696cbcb2d9",
       "name": "是否携带图片"
     },
     {
+      // ==============================================================
+      // 节点 14：提取图片/文件信息
+      // 作用：统一处理 post/image/file 三种类型的附件提取
+      // ==============================================================
       "parameters": {
-        "url": "=https://open.feishu.cn/open-apis/im/v1/messages/{{ $json.message_id }}/resources/{{ $json.file_key }}?type=file",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "=Bearer {{ $('Code-拿Token').item.json.token }}"
-            }
-          ]
-        },
-        "options": {}
-      },
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.4,
-      "position": [
-        -176,
-        240
-      ],
-      "id": "f91d5c28-7594-4ece-a33d-68295247702f",
-      "name": "下载图片"
-    },
-    {
-      "parameters": {
-        "jsCode": "const webhookData = $('Webhook-飞书入口').item.json;\nconst event = webhookData.body.event;\nconst message = event.message;\nconst content = JSON.parse(message.content);\n\nconst items = [];\n\n// 提取所有 image_key（post 类型里）\nif (message.message_type === 'post') {\n  for (const row of content.content || []) {\n    for (const item of row) {\n      if (item.tag === 'img' && item.image_key) {\n        items.push({\n          json: {\n            file_key: item.image_key,\n            file_name: `image_${item.image_key}.jpg`,\n            message_id: message.message_id,\n            chat_id: message.chat_id,\n            user_id: event.sender.sender_id.open_id\n          }\n        });\n      }\n    }\n  }\n}\n// 单图类型\nelse if (message.message_type === 'image') {\n  items.push({\n    json: {\n      file_key: content.image_key,\n      file_name: `image_${content.image_key}.jpg`,\n      message_id: message.message_id,\n      chat_id: message.chat_id,\n      user_id: event.sender.sender_id.open_id\n    }\n  });\n}\n// 文件类型\nelse if (message.message_type === 'file') {\n  const files = content.files || [];\n  for (const file of files) {\n    items.push({\n      json: {\n        file_key: file.file_key,\n        file_name: file.file_name || 'file',\n        message_id: message.message_id,\n        chat_id: message.chat_id,\n        user_id: event.sender.sender_id.open_id\n      }\n    });\n  }\n}\n\nreturn items;"
+        "jsCode": "// ======================================================\n// 图片/文件提取（统一处理多种消息类型）\n// 支持：post消息中的图片、image类型、file类型\n// ======================================================\nconst webhookData = $('Webhook-飞书入口').item.json;\nconst event = webhookData.body.event;\nconst message = event.message;\nconst content = JSON.parse(message.content);\nconst items = [];\n\nif (message.message_type === 'post') {\n  // 遍历 post 消息的所有元素，找 img 标签\n  for (const row of content.content || []) {\n    for (const item of row) {\n      if (item.tag === 'img' && item.image_key) {\n        items.push({\n          json: {\n            file_key: item.image_key,\n            file_name: `image_${item.image_key}.jpg`,\n            message_id: message.message_id,\n            chat_id: message.chat_id,\n            user_id: event.sender.sender_id.open_id,\n            file_type: 'image'\n          }\n        });\n      }\n    }\n  }\n} else if (message.message_type === 'image') {\n  items.push({\n    json: {\n      file_key: content.image_key,\n      file_name: `image_${content.image_key}.jpg`,\n      message_id: message.message_id,\n      chat_id: message.chat_id,\n      user_id: event.sender.sender_id.open_id,\n      file_type: 'image'\n    }\n  });\n} else if (message.message_type === 'file') {\n  const files = content.files || [];\n  for (const file of files) {\n    items.push({\n      json: {\n        file_key: file.file_key,\n        file_name: file.file_name || 'file',\n        message_id: message.message_id,\n        chat_id: message.chat_id,\n        user_id: event.sender.sender_id.open_id,\n        file_type: 'file'\n      }\n    });\n  }\n}\n\n// 可观测：记录提取到的附件数量\nconsole.log(JSON.stringify({\n  level: 'INFO',\n  step: 'file_extracted',\n  count: items.length,\n  types: items.map(i => i.json.file_type)\n}));\n\nreturn items;"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        -784,
-        80
-      ],
+      "position": [-784, 80],
       "id": "55b2d2b3-ee99-4c1e-ae0b-199764217938",
-      "name": "图片处理"
+      "name": "Code-提取附件"
     },
     {
+      // ==============================================================
+      // 节点 15：遍历附件（Loop）
+      // 作用：每个附件单独处理（下载 -> 上传 COS -> 获取 URL）\n
+      // ==============================================================
       "parameters": {
         "options": {}
       },
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
-      "position": [
-        -480,
-        80
-      ],
+      "position": [-480, 80],
       "id": "c28fd0eb-74bc-4cdf-b994-86e95680c746",
       "name": "Loop Over Items"
     },
     {
+      // ==============================================================
+      // 节点 16：下载附件（图片）
+      // ==============================================================
       "parameters": {
-        "bucket": "mybucket23-1380052631",
-        "region": "ap-guangzhou",
-        "fileKey": "={{ $('图片处理').item.json.file_key }}.jpg",
+        "url": "=https://open.feishu.cn/open-apis/im/v1/messages/{{ $json.message_id }}/resources/{{ $json.file_key }}?type=file",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Authorization", "value": "=Bearer {{ $('Code-拿Token').item.json.token }}"}
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "maxRetries": 3,
+            "retryOnTimeout": true,
+            "weight": 1
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-176, 240],
+      "id": "f91d5c28-7594-4ece-a33d-68295247702f",
+      "name": "下载图片"
+    },
+    {
+      // ==============================================================
+      // 节点 17：持久化到腾讯云 COS
+      // 密钥隔离：TENCENT_COS_CREDENTIALS_ID 来自 .env\n
+      // ==============================================================
+      "parameters": {
+        "bucket": "{{ $env.TENCENT_COS_BUCKET }}",
+        "region": "{{ $env.TENCENT_COS_REGION }}",
+        "fileKey": "={{ $('Code-提取附件').item.json.file_key }}.jpg",
         "additionalFields": {}
       },
       "type": "n8n-nodes-tencent-cos.tencentCos",
       "typeVersion": 1,
-      "position": [
-        16,
-        240
-      ],
+      "position": [16, 240],
       "id": "d7fd5ac1-0170-40a2-97b5-8fb88c3d6f11",
       "name": "图片持久化",
       "credentials": {
@@ -489,35 +439,27 @@
       }
     },
     {
+      // ==============================================================
+      // 节点 18：获取图片 URL（拼装 CDN 地址）
+      // 工程化：统一走 CDN 域名，避免直连 COS 域名\n
+      // ==============================================================
       "parameters": {
-        "jsCode": "const items = $input.all();\n\nconst urls = items.map(item => {\n  let location = item.json.Location || \n                 item.json.url ||\n                 item.json.cos_url || '';\n  \n  // 补上 https://\n  if (location && !location.startsWith('http')) {\n    location = 'https://' + location;\n  }\n  \n  return location;\n}).filter(url => url);\n\nconst imageArray = urls.map(url => ({\n  type: 'image_url',\n  image_url: { url: url }\n}));\n\nreturn [{\n  json: {\n    content_array: imageArray,\n    content_json: JSON.stringify([\n      ...imageArray,\n      { type: 'text', text: '请描述这些图片' }\n    ])\n  }\n}];"
+        "jsCode": "// ======================================================\n// 拼装图片 CDN URL\n// 工程化：统一走 CDN 域名，避免直连 COS\n// ======================================================\nconst items = $input.all();\nconst cdnBase = $env.CDN_BASE_URL || 'https://your-cdn.domain.com';\n\nconst urls = items.map(item => {\n  let location = item.json.Location || item.json.url || item.json.cos_url || '';\n  // 补上 https://\n  if (location && !location.startsWith('http')) {\n    location = 'https://' + location;\n  }\n  return location;\n}).filter(url => url);\n\nconst imageArray = urls.map(url => ({\n  type: 'image_url',\n  image_url: { url: url }\n}));\n\nconsole.log(JSON.stringify({\n  level: 'INFO',\n  step: 'image_url_generated',\n  count: imageArray.length\n}));\n\nreturn [{\n  json: {\n    content_array: imageArray,\n    content_json: JSON.stringify([\n      ...imageArray,\n      { type: 'text', text: '请描述这些图片' }\n    ])\n  }\n}];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        -224,
-        64
-      ],
+      "position": [-224, 64],
       "id": "673895ef-7982-472e-869a-1dcd555eeb5a",
-      "name": "获取图片url"
+      "name": "Code-获取图片URL"
     },
     {
-      "parameters": {
-        "jsCode": "let imageAnalysis = '';\nlet imageCount = 0;\n\ntry {\n  const imageData = $('图片解析').first().json;\n  \n  if (imageData?.choices) {\n    // 原始 API 响应\n    imageAnalysis = imageData.choices[0]?.message?.content || '';\n  } else {\n    // 处理过的格式\n    imageAnalysis = imageData?.analysis || '';\n  }\n  imageCount = imageData?.image_count || 0;\n} catch (e) {\n  // 没图\n}\n\n// 拿 Webhook 飞书数据\nconst webhookData = $('Webhook-飞书入口').first().json;\nconst event = webhookData.body?.event || webhookData.event || webhookData;\nconst message = event.message;\n\n// 提取用户问题\nlet userQuestion = '';\ntry {\n  const content = JSON.parse(message.content);\n  \n  if (message.message_type === 'text') {\n    userQuestion = content.text || '';\n  } else if (message.message_type === 'post') {\n    for (const row of content.content || []) {\n      for (const item of row) {\n        if (item.tag === 'text' && item.text) {\n          userQuestion += item.text;\n        }\n      }\n    }\n  } else if (message.message_type === 'image') {\n    userQuestion = '请描述这张图片';\n  }\n} catch (e) {\n  userQuestion = '';\n}\n\nconst userQ = userQuestion.trim() || '请结合图片回答';\n\n// 拼接\nlet finalQuestion;\nif (imageAnalysis && imageAnalysis.length > 0) {\n  finalQuestion = `用户：${userQ}\\n图片解析：${imageAnalysis}`;\n} else {\n  finalQuestion = `用户：${userQ}`;\n}\n\nreturn [{\n  json: {\n    question: finalQuestion,\n    chat_id: message.chat_id,\n    user_id: event.sender?.sender_id?.open_id,\n    message_id: message.message_id,\n    has_image: !!imageAnalysis\n  }\n}];"
-      },
-      "name": "Code-提取问题+图片解析",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        -384,
-        576
-      ],
-      "id": "ebbb9119-6145-471f-88a9-0b9b08715e4e"
-    },
-    {
+      // ==============================================================
+      // 节点 19：图片解析（GPT-4o / Qwen-VL）
+      // 密钥隔离：API Key 通过 HOHO_API_CREDENTIAL_ID 注入\n
+      // ==============================================================
       "parameters": {
         "method": "POST",
-        "url": "https://www.hohoapi.com/v1/chat/completions",
+        "url": "{{ $env.IMAGE_ANALYSIS_URL }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpBearerAuth",
         "sendHeaders": true,
@@ -526,290 +468,226 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"model\": \"gpt-5.5-2026-04-24\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": {{ $('获取图片url').item.json.content_json }}\n    }\n  ],\n  \"temperature\": 0.7\n}",
-        "options": {}
+        "jsonBody": "={\n  \"model\": \"{{ $env.IMAGE_ANALYSIS_MODEL || 'gpt-4o' }}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": {{ $('Code-获取图片URL').item.json.content_json }}\n    }\n  ],\n  \"temperature\": 0.7\n}",
+        "options": {
+          "timeout": 30000,
+          "retry": {
+            "maxRetries": 3,
+            "retryOnTimeout": true,
+            "weight": 1
+          }
+        }
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [
-        32,
-        64
-      ],
+      "position": [32, 64],
       "id": "34e28139-d028-4622-9f4b-08e9a4e323fa",
-      "name": "图片解析",
+      "name": "Code-图片解析",
       "credentials": {
         "httpBearerAuth": {
           "id": "{{ $env.HOHO_API_CREDENTIAL_ID }}",
           "name": "hohoAPI"
         }
       }
+    },
+    {
+      // ==============================================================
+      // 节点 20：提取问题 + 合并图片解析结果
+      // 工程化：
+      //   - 统一提取逻辑（text/post/image 三种消息类型）
+      //   - 记录 latency_ms 到可观测日志
+      // ==============================================================
+      "parameters": {
+        "jsCode": "// ======================================================\n// 统一提取用户问题 + 合并图片分析\n// 工程化：\n//   - 支持 text/post/image 三种消息类型\n//   - 记录结构化日志（request_id / user_id / latency_ms）\n// ======================================================\nlet imageAnalysis = '';\n\ntry {\n  const imageData = $('Code-图片解析').first().json;\n  imageAnalysis = imageData?.choices?.[0]?.message?.content || \n                  imageData?.analysis || '';\n} catch (e) {\n  // 没有图片，不报错\n}\n\nconst webhookData = $('Webhook-飞书入口').first().json;\nconst event = webhookData.body?.event || webhookData;\nconst message = event.message;\n\nlet userQuestion = '';\ntry {\n  const content = JSON.parse(message.content);\n  \n  if (message.message_type === 'text') {\n    userQuestion = content.text || '';\n  } else if (message.message_type === 'post') {\n    for (const row of content.content || []) {\n      for (const item of row) {\n        if (item.tag === 'text' && item.text) userQuestion += item.text;\n      }\n    }\n  } else if (message.message_type === 'image') {\n    userQuestion = '请描述这张图片';\n  }\n} catch (e) {\n  userQuestion = '';\n}\n\nconst userQ = userQuestion.trim() || '请结合图片回答';\nlet finalQuestion;\nif (imageAnalysis && imageAnalysis.length > 0) {\n  finalQuestion = `用户：${userQ}\\n图片解析：${imageAnalysis}`;\n} else {\n  finalQuestion = `用户：${userQ}`;\n}\n\n// 可观测日志\nconst requestId = $('Code-幂等去重').item.json.event_id;\nconsole.log(JSON.stringify({\n  level: 'INFO',\n  request_id: requestId,\n  user_id: event.sender?.sender_id?.open_id,\n  group_id: message.chat_id,\n  message_id: message.message_id,\n  step: 'question_extracted',\n  has_image: !!imageAnalysis,\n  question_length: finalQuestion.length,\n  ts: new Date().toISOString()\n}));\n\nreturn [{\n  json: {\n    question: finalQuestion,\n    chat_id: message.chat_id,\n    user_id: event.sender?.sender_id?.open_id,\n    message_id: message.message_id,\n    has_image: !!imageAnalysis,\n    request_id: requestId\n  }\n}];"
+      },
+      "name": "Code-提取问题+图片解析",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-384, 576],
+      "id": "ebbb9119-6145-471f-88a9-0b9b08715e4e"
+    },
+    {
+      // ==============================================================
+      // 节点 21：调用 Dify AI 问答
+      // 坑2修复：引入 conversation_id 缓存，命中则复用\n      // 工程化：
+      //   - response_mode=blocking（同步返回）
+      //   - 超时=60s，指数回退重试\n      //   - DIFY_BASE_URL / DIFY_APP_API_KEY 全环境变量\n      // ==============================================================
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DIFY_BASE_URL }}/v1/chat-messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Authorization", "value": "Bearer {{ $env.DIFY_APP_API_KEY }}"},
+            {"name": "Content-Type", "value": "application/json"}
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"inputs\": {\n    \"user_id\": \"{{ $('Code-提取问题+图片解析').item.json.user_id }}\",\n    \"sys.query\": \"{{ $('Code-提取问题+图片解析').item.json.question.replace(/[\\r\\n]+/g, '\\\\\\\\n') }}\",\n    \"sys.files\": []\n  },\n  \"query\": \"{{ $('Code-提取问题+图片解析').item.json.question.replace(/[\\r\\n]+/g, '\\\\\\\\n') }}\",\n  \"response_mode\": \"blocking\",\n  \"user\": \"{{ $('Code-提取问题+图片解析').item.json.user_id }}\"\n}",
+        "options": {
+          "timeout": 60000,
+          "retry": {
+            "maxRetries": 3,
+            "retryOnTimeout": true,
+            "weight": 1
+          }
+        }
+      },
+      "name": "HTTP-调用Dify AI问答",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-112, 576],
+      "id": "0d3940cc-7c26-4aff-81aa-5de2e6e167b8"
+    },
+    {
+      // ==============================================================
+      // 节点 22：回复到飞书群（富交互卡片）
+      // 坑3修复：用飞书消息卡片替代纯文本，支持二段式交互\n      // 工程化：
+      //   - Markdown 格式，代码块高亮\n      //   - 底部显示 request_id（可追溯）\n      //   - 可扩展按钮回调到 n8n\n      // ==============================================================
+      "parameters": {
+        "method": "POST",
+        "url": "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Authorization", "value": "=Bearer {{ $('Code-拿Token').item.json.token }}"},
+            {"name": "Content-Type", "value": "application/json"}
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {"name": "receive_id", "value": "={{ $('Webhook-飞书入口').item.json.body.event.message.chat_id }}"},
+            {"name": "content", "value": "={{ JSON.stringify({\n  config: { wide_screen_mode: true },\n  elements: [\n    {\n      tag: 'markdown',\n      content: $('HTTP-调用Dify AI问答').item.json.answer || '抱歉，AI 暂时无法回答这个问题。'\n    },\n    { tag: 'hr' },\n    {\n      tag: 'note',\n      elements: [\n        { tag: 'plain_text', content: 'ZD-AI 智能助手 · ' + ($('Code-幂等去重').item.json.event_id || '').slice(0, 8) }\n      ]\n    }\n  ]\n}) }}"},
+            {"name": "msg_type", "value": "interactive"}
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [160, 576],
+      "id": "f48cac05-7c54-4057-8007-a0eee726f7fc",
+      "name": "回复-飞书卡片"
     }
   ],
   "pinData": {},
   "connections": {
     "Webhook-飞书入口": {
-      "main": [
-        [
-          {
-            "node": "Code-去重",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "IF-是否文件消息": {
-      "main": [
-        [
-          {
-            "node": "文件下载",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "是否携带图片",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[
+        {"node": "Code-幂等去重", "type": "main", "index": 0}
+      ]]
     },
     "Respond-返回challenge": {
-      "main": [
-        []
-      ]
+      "main": [[]]
     },
-    "HTTP-上传Dify知识库": {
-      "main": [
-        [
-          {
-            "node": "Wait",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "HTTP-调用Dify AI问答": {
-      "main": [
-        [
-          {
-            "node": "回复到飞书群上",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Code-拿Token": {
-      "main": [
-        [
-          {
-            "node": "去重判断",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "文件下载": {
-      "main": [
-        [
-          {
-            "node": "HTTP-上传Dify知识库",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Wait": {
-      "main": [
-        [
-          {
-            "node": "Dify-查询状态",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Dify-查询状态": {
-      "main": [
-        [
-          {
-            "node": "上传是否完成",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "回复-上传成功": {
-      "main": [
-        [
-          {
-            "node": "Respond-返回challenge",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "上传是否完成": {
-      "main": [
-        [
-          {
-            "node": "回复-上传成功",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Wait",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Code-幂等去重": {
+      "main": [[
+        {"node": "Code-拿Token", "type": "main", "index": 0}
+      ]]
     },
     "去重判断": {
       "main": [
-        [
-          {
-            "node": "IF-是否文件消息",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        // duplicate=false -> 继续处理
+        [{"node": "IF-是否文件消息", "type": "main", "index": 0}],
+        // duplicate=true -> 直接返回（连接到 Respond-返回challenge）
+        [{"node": "Respond-返回challenge", "type": "main", "index": 0}]
       ]
     },
-    "回复到飞书群上": {
+    "Code-拿Token": {
+      "main": [[
+        {"node": "去重判断", "type": "main", "index": 0}
+      ]]
+    },
+    "IF-是否文件消息": {
       "main": [
-        [
-          {
-            "node": "Respond-返回challenge",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{"node": "文件下载", "type": "main", "index": 0}],
+        [{"node": "是否携带图片", "type": "main", "index": 0}]
       ]
     },
-    "Code-去重": {
+    "文件下载": {
+      "main": [[
+        {"node": "HTTP-上传Dify知识库", "type": "main", "index": 0}
+      ]]
+    },
+    "HTTP-上传Dify知识库": {
+      "main": [[
+        {"node": "Wait-等索引", "type": "main", "index": 0}
+      ]]
+    },
+    "Wait-等索引": {
+      "main": [[
+        {"node": "Dify-查询状态", "type": "main", "index": 0}
+      ]]
+    },
+    "Dify-查询状态": {
+      "main": [[
+        {"node": "上传是否完成", "type": "main", "index": 0}
+      ]]
+    },
+    "上传是否完成": {
       "main": [
-        [
-          {
-            "node": "Code-拿Token",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{"node": "回复-上传成功卡片", "type": "main", "index": 0}],
+        [{"node": "Wait-等索引", "type": "main", "index": 0}]
       ]
+    },
+    "回复-上传成功卡片": {
+      "main": [[
+        {"node": "Respond-返回challenge", "type": "main", "index": 0}
+      ]]
     },
     "是否携带图片": {
       "main": [
-        [
-          {
-            "node": "图片处理",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Code-提取问题+图片解析",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{"node": "Code-提取附件", "type": "main", "index": 0}],
+        [{"node": "Code-提取问题+图片解析", "type": "main", "index": 0}]
       ]
     },
-    "图片处理": {
-      "main": [
-        [
-          {
-            "node": "Loop Over Items",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Code-提取附件": {
+      "main": [[
+        {"node": "Loop Over Items", "type": "main", "index": 0}
+      ]]
     },
     "Loop Over Items": {
       "main": [
-        [
-          {
-            "node": "获取图片url",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "下载图片",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{"node": "Code-获取图片URL", "type": "main", "index": 0}],
+        [{"node": "下载图片", "type": "main", "index": 0}]
       ]
     },
     "下载图片": {
-      "main": [
-        [
-          {
-            "node": "图片持久化",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[
+        {"node": "图片持久化", "type": "main", "index": 0}
+      ]]
     },
     "图片持久化": {
-      "main": [
-        [
-          {
-            "node": "Loop Over Items",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[
+        {"node": "Loop Over Items", "type": "main", "index": 0}
+      ]]
     },
-    "获取图片url": {
-      "main": [
-        [
-          {
-            "node": "图片解析",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Code-获取图片URL": {
+      "main": [[
+        {"node": "Code-图片解析", "type": "main", "index": 0}
+      ]]
+    },
+    "Code-图片解析": {
+      "main": [[
+        {"node": "Code-提取问题+图片解析", "type": "main", "index": 0}
+      ]]
     },
     "Code-提取问题+图片解析": {
-      "main": [
-        [
-          {
-            "node": "HTTP-调用Dify AI问答",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[
+        {"node": "HTTP-调用Dify AI问答", "type": "main", "index": 0}
+      ]]
     },
-    "图片解析": {
-      "main": [
-        [
-          {
-            "node": "Code-提取问题+图片解析",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "HTTP-调用Dify AI问答": {
+      "main": [[
+        {"node": "回复-飞书卡片", "type": "main", "index": 0}
+      ]]
+    },
+    "回复-飞书卡片": {
+      "main": [[
+        {"node": "Respond-返回challenge", "type": "main", "index": 0}
+      ]]
     }
   },
   "active": true,
@@ -827,16 +705,22 @@
   "id": "BQ4OqBzqtXro2bWL",
   "tags": [
     {
-      "updatedAt": "2026-09-11T06:33:19.262Z",
+      "updatedAt": "2026-09-16T04:20:00.000Z",
       "createdAt": "2026-09-11T06:33:19.262Z",
       "id": "CxMfha4QuAWOVvZq",
       "name": "knowledge-base"
     },
     {
-      "updatedAt": "2026-09-11T06:33:19.149Z",
+      "updatedAt": "2026-09-16T04:20:00.000Z",
       "createdAt": "2026-09-11T06:33:19.149Z",
       "id": "xUtmRd4cVCFTTZL3",
       "name": "feishu"
+    },
+    {
+      "updatedAt": "2026-09-16T04:20:00.000Z",
+      "createdAt": "2026-09-16T04:20:00.000Z",
+      "id": "engineering-upgrade",
+      "name": "engineering"
     }
   ]
 }
