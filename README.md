@@ -95,13 +95,7 @@
 ## ✨ 工程化细节
 
 ### 🔐 密钥隔离
-所有 `FEISHU_APP_SECRET`、`DIFY_API_KEY`、`SUPABASE_ANON_KEY` 通过 `.env` 注入，配置文件只保留 `{{ $env.XXX }}` 占位符。`.env` 已加入 `.gitignore`，绝不提交。
-
-```json
-// n8n HTTP 节点中的写法示例
-"value": "Bearer {{ $env.DIFY_APP_API_KEY }}"
-// 不是 "Bearer sk-xxxxxxxx" 这种硬编码
-```
+所有密钥通过 `.env` 注入，配置文件只保留 `{{ $env.XXX }}` 占位符。`.env` 已加入 `.gitignore`。
 
 ### 🔁 幂等与重试
 - **幂等**：`event_id` 做幂等键，Redis SETNX + TTL=60s，覆盖飞书重试窗口（3s）。已处理消息直接返回 200，不再往后传。
